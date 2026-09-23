@@ -1,0 +1,37 @@
+# Left Arm Motor — can0, ID 4
+# Dual-arm openarm robot: left arm joint motor
+
+motor_model: "DM4340"
+can_id: 4
+active: true
+
+# Protocol ranges — uint value ↔ physical quantity mapping
+# Per Damiao MIT mode specification
+ranges:
+  position: { min: -12.5, max: 12.5 }
+  velocity: { min: -20.0, max: 20.0 }
+  kp:       { min: 0.0,   max: 500.0 }
+  kd:       { min: 0.0,   max: 5.0 }
+  torque:   { min: -28.0, max: 28.0 }
+
+# Safety limits — commands are clamped to these before encoding
+limits:
+  position: { min: -12.5, max: 12.5 }
+  velocity_max: 20.0
+  kp_max: 500.0
+  kd_max: 5.0
+  torque_max: 28.0
+
+# Zero offset compensation (rad)
+# Adjust this to align motor physical zero with model joint zero
+position_offset: 0.0
+
+# Axis direction — set to -1.0 to invert that axis
+# This ensures motor rotation direction matches model coordinate system
+signs:
+  position: 1.0
+  velocity: 1.0
+  torque:   1.0
+
+# Feedback frame type (0 = default mirror of command layout)
+feedback_type: 1

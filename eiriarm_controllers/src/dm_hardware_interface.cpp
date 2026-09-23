@@ -104,9 +104,9 @@ double DMHardwareInterface::urdf_to_raw_pos_near(
 bool DMHardwareInterface::load_offsets_yaml(const std::string & path)
 {
   if (path.empty()) {
-    RCLCPP_WARN(rclcpp::get_logger("DMHardwareInterface"),
-                "No offsets_yaml hardware_parameter set; using zero_offset=0, axis_sign=1 for all joints");
-    return true;
+    RCLCPP_ERROR(rclcpp::get_logger("DMHardwareInterface"),
+                "offsets_yaml is required; calibrate the W3 arms before starting control");
+    return false;
   }
 
   std::ifstream f(path);
@@ -137,6 +137,12 @@ bool DMHardwareInterface::load_offsets_yaml(const std::string & path)
     std::string name = e["name"].as<std::string>();
     double zo = e["zero_offset"] ? e["zero_offset"].as<double>() : 0.0;
     double sign = e["axis_sign"] ? e["axis_sign"].as<double>() : 1.0;
+    if (!e["zero_offset"] || !std::isfinite(zo) ||
+        (sign != 1.0 && sign != -1.0) || by_name.count(name)) {
+      RCLCPP_ERROR(rclcpp::get_logger("DMHardwareInterface"),
+                   "Invalid/duplicate calibration entry for '%s'", name.c_str());
+      return false;
+    }
     by_name[name] = {zo, sign};
   }
 
@@ -148,9 +154,10 @@ bool DMHardwareInterface::load_offsets_yaml(const std::string & path)
       j.axis_sign = it->second.second;
       ++hit;
     } else {
-      RCLCPP_WARN(rclcpp::get_logger("DMHardwareInterface"),
-                  "Joint '%s' not found in offsets_yaml; using zero_offset=0, axis_sign=1",
+      RCLCPP_ERROR(rclcpp::get_logger("DMHardwareInterface"),
+                  "Joint '%s' not found in offsets_yaml; refusing uncalibrated control",
                   j.name.c_str());
+      return false;
     }
   }
   RCLCPP_INFO(rclcpp::get_logger("DMHardwareInterface"),
@@ -197,7 +204,7 @@ hardware_interface::CallbackReturn DMHardwareInterface::on_init(
       return it != jinfo.parameters.end() ? it->second : std::string{};
     };
 
-    int ch = 1, slot = 0;
+    int ch = 0, slot = 0;
     if (!parse_int(get("channel"), ch)) {
       RCLCPP_ERROR(rclcpp::get_logger("DMHardwareInterface"),
                    "Joint '%s' missing/invalid <param name=\"channel\">", j.name.c_str());
@@ -214,6 +221,11 @@ hardware_interface::CallbackReturn DMHardwareInterface::on_init(
       return hardware_interface::CallbackReturn::ERROR;
     }
     j.channel = ch;
+    if (ch < 0 || ch > 1) {
+      RCLCPP_ERROR(rclcpp::get_logger("DMHardwareInterface"),
+                   "Arm channel must be 0 (can0) or 1 (can1), got %d", ch);
+      return hardware_interface::CallbackReturn::ERROR;
+    }
     j.slot = slot;
     j.motor_type = get("motor_type");
 
@@ -292,24 +304,23 @@ hardware_interface::CallbackReturn DMHardwareInterface::on_configure(
 {
   node_ = std::make_shared<rclcpp::Node>("dm_hardware_interface");
 
+  const std::string state_t = motor_topic_ns_ + "/state";
+  const std::string cmd_t = motor_topic_ns_ + "/commands";
+  rclcpp::QoS qos(rclcpp::KeepLast(50));
+  qos.best_effort();
+
+  state_sub_ = node_->create_subscription<w3_robot_bridge::msg::MotorStateArray>(
+    state_t, qos,
+    [this](w3_robot_bridge::msg::MotorStateArray::SharedPtr msg) {
+      on_motor_state(msg);
+    });
+  cmd_pub_ = node_->create_publisher<w3_robot_bridge::msg::MotorCommandArray>(cmd_t, qos);
+
   for (int ch : unique_channels_) {
-    const std::string state_t  = motor_topic_ns_ + "/ch" + std::to_string(ch) + "/state";
-    const std::string cmd_t    = motor_topic_ns_ + "/ch" + std::to_string(ch) + "/cmd";
-    const std::string enable_t = motor_topic_ns_ + "/ch" + std::to_string(ch) + "/motor_enable";
-
-    state_subs_[ch] = node_->create_subscription<usb2can::msg::MotorStateArray>(
-      state_t, rclcpp::SensorDataQoS(),
-      [this, ch](usb2can::msg::MotorStateArray::SharedPtr msg) {
-        on_motor_state(ch, msg);
-      });
-    cmd_pubs_[ch] = node_->create_publisher<usb2can::msg::MotorCommandArray>(cmd_t, 10);
-    enable_pubs_[ch] = node_->create_publisher<usb2can::msg::MotorEnableArray>(enable_t, 10);
     state_seen_[ch] = false;
-
-    RCLCPP_INFO(node_->get_logger(),
-                "ch%d:  sub %s   pub %s   pub %s",
-                ch, state_t.c_str(), cmd_t.c_str(), enable_t.c_str());
   }
+  RCLCPP_INFO(node_->get_logger(), "W3 bridge: sub %s   pub %s",
+              state_t.c_str(), cmd_t.c_str());
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -344,38 +355,39 @@ DMHardwareInterface::export_command_interfaces()
 
 void DMHardwareInterface::publish_enable_all(bool enable)
 {
-  for (int ch : unique_channels_) {
-    usb2can::msg::MotorEnableArray msg;
-    msg.header.stamp = node_->now();
-    msg.channel = static_cast<uint8_t>(ch);
-    for (size_t idx : joints_by_channel_[ch]) {
-      usb2can::msg::MotorEnable m;
-      m.id = static_cast<uint8_t>(joints_[idx].slot);
-      m.enable = enable;
-      msg.motors.push_back(m);
-    }
-    enable_pubs_[ch]->publish(msg);
+  w3_robot_bridge::msg::MotorCommandArray msg;
+  msg.header.stamp = node_->now();
+  msg.commands.reserve(joints_.size());
+  for (const auto & j : joints_) {
+    w3_robot_bridge::msg::MotorCommand m;
+    m.channel = static_cast<uint8_t>(j.channel);
+    m.motor_index = static_cast<uint8_t>(j.slot);
+    m.mode = enable ?
+      w3_robot_bridge::msg::MotorCommand::MODE_ENABLE :
+      w3_robot_bridge::msg::MotorCommand::MODE_DISABLE;
+    msg.commands.push_back(m);
   }
+  cmd_pub_->publish(msg);
 }
 
 void DMHardwareInterface::publish_zero_command_all()
 {
-  for (int ch : unique_channels_) {
-    usb2can::msg::MotorCommandArray msg;
-    msg.header.stamp = node_->now();
-    msg.channel = static_cast<uint8_t>(ch);
-    for (size_t idx : joints_by_channel_[ch]) {
-      usb2can::msg::MotorCommand m;
-      m.id = static_cast<uint8_t>(joints_[idx].slot);
-      m.position = 0.0f;
-      m.velocity = 0.0f;
-      m.kp = 0.0f;
-      m.kd = 0.0f;
-      m.torque_ff = 0.0f;
-      msg.motors.push_back(m);
-    }
-    cmd_pubs_[ch]->publish(msg);
+  w3_robot_bridge::msg::MotorCommandArray msg;
+  msg.header.stamp = node_->now();
+  msg.commands.reserve(joints_.size());
+  for (const auto & j : joints_) {
+    w3_robot_bridge::msg::MotorCommand m;
+    m.channel = static_cast<uint8_t>(j.channel);
+    m.motor_index = static_cast<uint8_t>(j.slot);
+    m.mode = w3_robot_bridge::msg::MotorCommand::MODE_RUN;
+    m.position = 0.0f;
+    m.velocity = 0.0f;
+    m.kp = 0.0f;
+    m.kd = 0.0f;
+    m.torque = 0.0f;
+    msg.commands.push_back(m);
   }
+  cmd_pub_->publish(msg);
 }
 
 hardware_interface::CallbackReturn DMHardwareInterface::on_activate(
@@ -397,26 +409,8 @@ hardware_interface::CallbackReturn DMHardwareInterface::on_activate(
     return hardware_interface::CallbackReturn::SUCCESS;
   }
 
-  // ---- synchronous ENABLE: every 20 ms (50 Hz) we publish BOTH:
-  //   - a zero-impedance MotorCommandArray (cmd byte = slot mask, payload = MIT zero)
-  //   - a MotorEnableArray with enable=true (cmd byte = slot mask, payload = DM_ENABLE)
-  // Reasons:
-  //   1) The STM32 watchdog disables every motor in prev_mask if no
-  //      DcuCommand arrives for >100 ms (see USB2CAN README §10.2).
-  //      During on_activate ros2_control's update() is not running yet,
-  //      so write() never runs. 20 ms cadence << 100 ms watchdog -> safe.
-  //   2) Each MotorEnable publish becomes one DcuCommand carrying the
-  //      DM_ENABLE special-byte sequence to every tracked motor. A DM
-  //      motor in disabled state needs to actually receive this sequence
-  //      to transition to MIT. Empirically (e.g. left ch1 odd slots) some
-  //      motors miss the transition window when ENABLE is published at
-  //      only 5 Hz; sending it 10x more often (50 Hz) resolves the flake.
-  //   3) DM motors are request-response: each cmd frame triggers exactly
-  //      one state frame. Two 50 Hz publishes therefore give us a steady
-  //      ~100 Hz feed of err codes to poll.
-  // Both frame types are safe pre-MIT: a disabled motor still echoes a
-  // state frame for a zero-cmd but does not move; DM_ENABLE in MIT is a
-  // no-op (or re-asserts MIT) per the DM datasheet.
+  // Refresh enable plus zero impedance at 50 Hz until motor feedback confirms.
+  // W3 schedules CAN transmission separately; write() is not running yet.
   static constexpr int DM_ERR_ENABLED = 1;
   const double timeout_s = 5.0;
   const auto loop_period = std::chrono::milliseconds(20);  // 50 Hz both
@@ -430,11 +424,11 @@ hardware_interface::CallbackReturn DMHardwareInterface::on_activate(
     const auto now = std::chrono::steady_clock::now();
     const double elapsed_s = std::chrono::duration<double>(now - t0).count();
     if (elapsed_s > timeout_s) break;
-    // Both at 50 Hz: zero-cmd keeps STM32 watchdog quiet AND ENABLE
-    // keeps hammering the DM_ENABLE special-byte sequence at every motor
-    // until each one transitions to MIT.
-    publish_zero_command_all();
+    // Both at 50 Hz: ENABLE keeps hammering the DM_ENABLE special-byte
+    // sequence at every motor until each one transitions to MIT, then
+    // zero-cmd immediately overwrites W3's transient enable damping command.
     publish_enable_all(true);
+    publish_zero_command_all();
     bool all_enabled = true;
     for (size_t i = 0; i < joints_.size(); ++i) {
       if (last_err_[i] != DM_ERR_ENABLED) {
@@ -550,47 +544,32 @@ hardware_interface::CallbackReturn DMHardwareInterface::on_deactivate(
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
-void DMHardwareInterface::on_motor_state(int ch,
-  const usb2can::msg::MotorStateArray::SharedPtr msg)
+void DMHardwareInterface::on_motor_state(
+  const w3_robot_bridge::msg::MotorStateArray::SharedPtr msg)
 {
-  latest_state_[ch] = msg;
-  state_seen_[ch] = true;
-
-  // Per-joint sentinel filter + full state update. dm_motor_bridge
-  // publishes -pos_max/-vel_max/-tor_max for slots whose motor did not
-  // respond to the last STM32 frame; in that case b[0] is also 0 so the
-  // unpacked err==0 is meaningless. Treating the sentinel as real motor
-  // data would corrupt state_pos_ / state_vel_ / state_eff_ by several
-  // rad, which then trips the joint_position_controller: on_activate()
-  // captures the corrupt value as hold_pos_, and the next write() commands
-  // a setpoint roughly that far from the actual joint, slamming the motor
-  // into whichever physical limit lies on the kp side. Likewise it would
-  // corrupt last_err_ (the on_activate / on_deactivate signal) and
-  // last_pos_raw_ (the bumpless mirror in write()).
-  //
-  // We therefore make on_motor_state the *single* source of truth for
-  // state_*_ / last_err_ / last_pos_raw_; read() just drains the
-  // subscription queue. State stays at its previous value through any
-  // sentinel transient, which is the correct behaviour: a brief drop is
-  // hidden, and a permanent silence freezes state at the last known good
-  // value (downstream controllers will see no change rather than a slam).
-  constexpr double EPS = 1e-3;
-  for (size_t idx : joints_by_channel_[ch]) {
-    const auto & j = joints_[idx];
-    if (j.slot >= static_cast<int>(msg->motors.size())) continue;
-    const auto & m = msg->motors[j.slot];
-    const bool is_sentinel =
-      std::abs(m.position + j.pos_max) < EPS &&
-      std::abs(m.velocity + j.vel_max) < EPS &&
-      std::abs(m.torque   + j.tor_max) < EPS;
-    if (is_sentinel) {
+  for (const auto & m : msg->motors) {
+    const int ch = static_cast<int>(m.channel);
+    state_seen_[ch] = true;
+    auto by_channel = joints_by_channel_.find(ch);
+    if (by_channel == joints_by_channel_.end()) {
       continue;
     }
-    last_err_[idx]     = static_cast<int>(m.err);
-    last_pos_raw_[idx] = static_cast<double>(m.position);
-    state_pos_[idx] = raw_to_urdf_pos(j, static_cast<double>(m.position));
-    state_vel_[idx] = j.axis_sign * static_cast<double>(m.velocity);
-    state_eff_[idx] = j.axis_sign * static_cast<double>(m.torque);
+    for (size_t idx : by_channel->second) {
+      const auto & j = joints_[idx];
+      if (j.slot != static_cast<int>(m.motor_index)) {
+        continue;
+      }
+      if (!m.online || !std::isfinite(m.position) ||
+          !std::isfinite(m.velocity) || !std::isfinite(m.torque)) {
+        continue;
+      }
+      last_err_[idx] = static_cast<int>(m.error_flags);
+      last_pos_raw_[idx] = static_cast<double>(m.position);
+      state_pos_[idx] = raw_to_urdf_pos(j, static_cast<double>(m.position));
+      state_vel_[idx] = j.axis_sign * static_cast<double>(m.velocity);
+      state_eff_[idx] = j.axis_sign * static_cast<double>(m.torque);
+      break;
+    }
   }
 }
 
@@ -607,17 +586,15 @@ hardware_interface::return_type DMHardwareInterface::read(
 hardware_interface::return_type DMHardwareInterface::write(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-  // For every channel that has joints, emit one MotorCommandArray with
-  // exactly those slots filled. Slots not listed are auto-zeroed by
-  // dm_motor_bridge per its message contract.
+  // Emit one W3 MotorCommandArray carrying all active arm joints.
   //
   // While quiescing_ is true (set by on_deactivate), force every field to
   // zero so a still-active controller cannot inject torques into a motor
   // that we are simultaneously trying to disable.
+  w3_robot_bridge::msg::MotorCommandArray msg;
+  msg.header.stamp = node_->now();
+  msg.commands.reserve(joints_.size());
   for (int ch : unique_channels_) {
-    usb2can::msg::MotorCommandArray msg;
-    msg.header.stamp = node_->now();
-    msg.channel = static_cast<uint8_t>(ch);
     for (size_t idx : joints_by_channel_[ch]) {
       const auto & j = joints_[idx];
       double pos_urdf, vel_urdf, eff_urdf, kp, kd;
@@ -632,24 +609,8 @@ hardware_interface::return_type DMHardwareInterface::write(
       }
 
       // Safety mirror for pure-torque mode (kp == kd == 0):
-      //   Set pos_cmd = last raw motor position, vel_cmd = 0. The STM32
-      //   watchdog falls back to (kp=1, kd=1, last pos_cmd, last vel_cmd)
-      //   if the upstream link drops for >100 ms. If pos_cmd were left at
-      //   its stale value (e.g. zero_offset from on_activate), that
-      //   fallback would snap the motor toward a target several rad away
-      //   from where the joint actually is right now, producing a violent
-      //   torque spike on a comm-drop -- exactly the failure mode this
-      //   block prevents.
-      //
-      //   We sidestep cmd_pos_ entirely in this branch: a pure-torque
-      //   controller leaves cmd_pos_ at whatever was last written (0 by
-      //   default), so deriving pos_raw from cmd_pos_ would not track the
-      //   actual joint. last_pos_raw_ stays in raw frame and reflects the
-      //   live motor position, so it is the correct mirror target.
-      //
-      //   The branch is skipped while quiescing_ is true -- in that path
-      //   pos_cmd=0 is paired with an active DISABLE on the same channel,
-      //   so the motor will not act on it.
+      //   Mirror measured raw position when only torque is controlled.
+      //   This keeps the position field continuous across mode switches.
       double pos_raw, vel_raw;
       if (!quiescing_ && kp == 0.0 && kd == 0.0) {
         pos_raw = last_pos_raw_[idx];
@@ -667,17 +628,19 @@ hardware_interface::return_type DMHardwareInterface::write(
       const double eff_clamped = std::clamp(eff_urdf, -j.tor_max, j.tor_max);
       const double tau_raw = j.axis_sign * eff_clamped;
 
-      usb2can::msg::MotorCommand m;
-      m.id        = static_cast<uint8_t>(j.slot);
-      m.position  = static_cast<float>(pos_raw);
-      m.velocity  = static_cast<float>(vel_raw);
-      m.kp        = static_cast<float>(kp);
-      m.kd        = static_cast<float>(kd);
-      m.torque_ff = static_cast<float>(tau_raw);
-      msg.motors.push_back(m);
+      w3_robot_bridge::msg::MotorCommand m;
+      m.channel = static_cast<uint8_t>(j.channel);
+      m.motor_index = static_cast<uint8_t>(j.slot);
+      m.mode = w3_robot_bridge::msg::MotorCommand::MODE_RUN;
+      m.position = static_cast<float>(pos_raw);
+      m.velocity = static_cast<float>(vel_raw);
+      m.kp = static_cast<float>(kp);
+      m.kd = static_cast<float>(kd);
+      m.torque = static_cast<float>(tau_raw);
+      msg.commands.push_back(m);
     }
-    cmd_pubs_[ch]->publish(msg);
   }
+  cmd_pub_->publish(msg);
   return hardware_interface::return_type::OK;
 }
 

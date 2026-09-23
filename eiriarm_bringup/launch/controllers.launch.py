@@ -211,7 +211,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'offsets_yaml',
-            default_value='joint_offsets_dual.yaml',
+            default_value='src/ros2_ws_config/joint_offsets_dual.yaml',
             description=(
                 'Path to the 14-joint zero/sign calibration YAML for real '
                 'hardware. Relative paths are resolved from the launch '
@@ -220,7 +220,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'friction_model_yaml',
-            default_value='friction_model.yaml',
+            default_value='src/ros2_ws_config/friction_model.yaml',
             description=(
                 'Path to the friction model YAML for real hardware. '
                 'Relative paths are resolved from the launch working directory.'

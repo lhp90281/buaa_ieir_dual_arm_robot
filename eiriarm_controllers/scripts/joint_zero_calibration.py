@@ -2,17 +2,21 @@
 """Manual joint zero calibration.
 
 Unified equation:
-        zero_offset = raw_at_reference - urdf_pos_at_reference
-        => urdf_pos = raw_pos - zero_offset
-        => raw_cmd  = urdf_cmd + zero_offset
+        zero_offset = raw_at_reference - axis_sign * urdf_pos_at_reference
+        => urdf_pos = axis_sign * (raw_pos - zero_offset)
+        => raw_cmd  = axis_sign * urdf_cmd + zero_offset
 
-Two modes (CLI flag --mode):
+Modes (CLI flag --mode):
+
+    direction: FK-only MuJoCo preview, model zero plus one motor's delta.
+        SPACE flips the displayed direction, ENTER captures/accepts.
+        Saves a separate direction file; does not calibrate absolute zero.
 
     hard-stop  (default, suited for arms without a zero-pose fixture):
         Sequentially per joint:
           - prompt 'push joint X into its single-side hard stop, ENTER'
           - capture median raw at that limit
-          - zero_offset = raw_at_limit - urdf_pos_at_limit
+          - zero_offset = raw_at_limit - axis_sign * urdf_pos_at_limit
         urdf_pos_at_limit comes from CAD/drawings (the URDF position the
         link physically reaches at that hard stop, NOT necessarily the
         URDF <limit> field).
@@ -28,9 +32,7 @@ Two modes (CLI flag --mode):
 Usage:
 
     # bring the bus up first (terminal A):
-    ros2 launch usb2can usb2can_with_dm.launch.py \\
-        device:=/dev/ttyACM0 \\
-        motors_config:=$(ros2 pkg prefix usb2can)/share/usb2can/config/dm_motors_eiriarm.yaml
+    ros2 launch eiriarm_bringup bridge.launch.py
 
     # zero-pose calibration (with fixture):
     ros2 run eiriarm_controllers joint_zero_calibration \\
@@ -48,7 +50,8 @@ Safety:
     * Motors are enabled in zero-impedance MIT mode (kp=0, kd=0, tau_ff=0).
       They will freewheel; gravity-loaded links may drop. Be ready to
       support the arm before pressing ENTER.
-    * Ctrl-C at any time will disable every motor before exiting.
+    * Ctrl-C attempts to disable all selected motors and checks feedback.
+      Missing feedback is NOT proof of disable; support the arm throughout.
     * If the arm is moving when you press ENTER (|max - min| over the
       window > sampling.max_motion_rad), the sample is rejected and the
       script asks you to try again -- avoids capturing a bouncy reading.
@@ -72,13 +75,12 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from usb2can.msg import (
+from w3_robot_bridge.msg import (
     MotorCommand,
     MotorCommandArray,
-    MotorEnable,
-    MotorEnableArray,
     MotorStateArray,
 )
+from calibration_direction import DirectionPreview, load_directions
 
 
 MOTOR_LIMITS: Dict[str, Tuple[float, float, float]] = {
@@ -92,7 +94,7 @@ MOTOR_LIMITS: Dict[str, Tuple[float, float, float]] = {
 NO_DATA_EPSILON = 1e-3
 LIMIT_SIDES = ('positive', 'negative')
 
-# DM motor state code (MotorState.err = RX byte0 high 4 bits).
+# DM motor state code (MotorState.error_flags = RX byte0 high 4 bits).
 # 0=disabled, 1=enabled(MIT), 8=overvoltage, 9=undervoltage,
 # 10=overcurrent, 11=MOS overtemp, 12=rotor overtemp,
 # 13=comm lost, 14=overload.
@@ -128,6 +130,10 @@ class JointSpec:
     pos_max: float
     vel_max: float
     tor_max: float
+    axis_sign: int = 1
+    direction_verified: bool = False
+    reference_original: Optional[float] = None
+    reference_confirmed: bool = False
 
 
 @dataclasses.dataclass
@@ -148,6 +154,9 @@ def load_calibration_config(path: Path) -> CalibConfig:
         raise KeyError(f'{path}: top-level "channel" missing')
     if 'joints' not in data or not data['joints']:
         raise KeyError(f'{path}: "joints" missing or empty')
+
+    if int(data['channel']) not in (0, 1):
+        raise ValueError('W3 arm channel must be 0 (left) or 1 (right)')
 
     sampling = data.get('sampling', {})
     window_sec = float(sampling.get('window_sec', 0.5))
@@ -205,11 +214,9 @@ class CalibrationNode(Node):
         self._slot_to_joint: Dict[int, JointSpec] = {j.slot: j for j in joints}
 
         self._cmd_pub = self.create_publisher(
-            MotorCommandArray, f'/motor/ch{channel}/cmd', 10)
-        self._enable_pub = self.create_publisher(
-            MotorEnableArray, f'/motor/ch{channel}/motor_enable', 10)
+            MotorCommandArray, '/w3_robot_bridge_node/commands', 10)
         self._state_sub = self.create_subscription(
-            MotorStateArray, f'/motor/ch{channel}/state',
+            MotorStateArray, '/w3_robot_bridge_node/state',
             self._on_state, qos_profile_sensor_data)
 
         self._state_lock = threading.Lock()
@@ -221,9 +228,10 @@ class CalibrationNode(Node):
             j.slot: [] for j in joints}
         self._sampling_active = False
 
-        # slot -> latest MotorState.err (only updated for non-sentinel frames).
+        # slot -> latest MotorState.error_flags (only updated for non-sentinel frames).
         # Used by enable_all / disable_all to confirm motor state directly.
         self._state_err: Dict[int, int] = {}
+        self._state_received_at: Dict[int, float] = {}
 
         self._control_timer = self.create_timer(0.010, self._tick_cmd)
 
@@ -239,25 +247,26 @@ class CalibrationNode(Node):
     # --------------- ROS callbacks ---------------
 
     def _on_state(self, msg: MotorStateArray) -> None:
-        if msg.channel != self.channel:
-            return
+        motors = {m.motor_index: m for m in msg.motors
+                  if m.channel == self.channel and m.online
+                  and all(math.isfinite(v) for v in (m.position, m.velocity, m.torque))}
         stamp_ns = (msg.header.stamp.sec * 1_000_000_000
                     + msg.header.stamp.nanosec)
-        # Discard "no-data" sentinel frames (bridge publishes -limits when
-        # STM32 has not seen feedback yet).
+        received_at = time.monotonic()
+        # Only finite, online W3 states on this arm are admitted above.
         with self._state_lock:
             for j in self.joints:
-                if j.slot >= len(msg.motors):
+                if j.slot not in motors:
+                    self._states.pop(j.slot, None)
+                    self._state_err.pop(j.slot, None)
+                    self._state_received_at.pop(j.slot, None)
                     continue
-                m = msg.motors[j.slot]
-                if (abs(m.position + j.pos_max) < NO_DATA_EPSILON and
-                        abs(m.velocity + j.vel_max) < NO_DATA_EPSILON and
-                        abs(m.torque + j.tor_max) < NO_DATA_EPSILON):
-                    continue
+                m = motors[j.slot]
                 pos = float(m.position)
                 self._states[j.slot] = (
                     pos, float(m.velocity), float(m.torque), stamp_ns)
-                self._state_err[j.slot] = int(m.err)
+                self._state_err[j.slot] = int(m.error_flags)
+                self._state_received_at[j.slot] = received_at
                 if self._sampling_active:
                     self._sample_buf[j.slot].append((stamp_ns, pos))
 
@@ -267,26 +276,30 @@ class CalibrationNode(Node):
         # they receive a cmd (this matches friction_compensation_demo.py).
         arr = MotorCommandArray()
         arr.header.stamp = self.get_clock().now().to_msg()
-        arr.channel = self.channel
-        arr.motors = [
-            MotorCommand(id=j.slot, position=0.0, velocity=0.0,
-                         kp=0.0, kd=0.0, torque_ff=0.0)
+        arr.commands = [
+            MotorCommand(channel=self.channel, motor_index=j.slot, mode=MotorCommand.MODE_RUN, position=0.0, velocity=0.0,
+                         kp=0.0, kd=0.0, torque=0.0)
             for j in self.joints
         ]
         self._cmd_pub.publish(arr)
 
     def _publish_enable_msg(self, enable: bool) -> None:
-        msg = MotorEnableArray()
+        msg = MotorCommandArray()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.channel = self.channel
-        msg.motors = [MotorEnable(id=j.slot, enable=enable) for j in self.joints]
-        self._enable_pub.publish(msg)
+        mode = MotorCommand.MODE_ENABLE if enable else MotorCommand.MODE_DISABLE
+        msg.commands = [
+            MotorCommand(channel=self.channel, motor_index=slot, mode=mode)
+            for slot in [j.slot for j in self.joints]
+        ]
+        self._cmd_pub.publish(msg)
 
     # --------------- main-thread helpers ---------------
 
     def get_state(self, slot: int) -> Optional[Tuple[float, float, float]]:
         with self._state_lock:
             s = self._states.get(slot)
+            if time.monotonic() - self._state_received_at.get(slot, 0.0) > 0.5:
+                return None
         return None if s is None else (s[0], s[1], s[2])
 
     def have_any_state(self) -> bool:
@@ -315,10 +328,13 @@ class CalibrationNode(Node):
 
     # --------------- enable / disable ---------------
 
-    def _snapshot_err(self) -> Dict[int, Optional[int]]:
-        """Per-tracked-slot latest err code (None if no real frame yet)."""
+    def _snapshot_err(self, since: float = 0.0) -> Dict[int, Optional[int]]:
+        """Only admit recent online feedback received after this operation began."""
+        cutoff = max(since, time.monotonic() - 0.5)
         with self._state_lock:
-            return {j.slot: self._state_err.get(j.slot) for j in self.joints}
+            return {j.slot: (self._state_err.get(j.slot)
+                            if self._state_received_at.get(j.slot, 0.0) > cutoff
+                            else None) for j in self.joints}
 
     def _format_err_table(self, errs: Dict[int, Optional[int]]) -> str:
         return ', '.join(
@@ -327,9 +343,10 @@ class CalibrationNode(Node):
     def enable_all(self, timeout: float = 5.0,
                    stop_evt: Optional[threading.Event] = None) -> bool:
         """Publish ENABLE at 5 Hz until every tracked motor reports
-        MotorState.err == DM_ERR_ENABLED, or the timeout expires.
+        MotorState.error_flags == DM_ERR_ENABLED, or the timeout expires.
         Returns True iff every joint confirmed enabled."""
-        deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
+        deadline = started_at + timeout
         last_pub = 0.0
         slot_str = ','.join(str(j.slot) for j in self.joints)
         self.get_logger().info(
@@ -343,7 +360,7 @@ class CalibrationNode(Node):
             if now - last_pub >= 0.2:
                 self._publish_enable_msg(True)
                 last_pub = now
-            errs = self._snapshot_err()
+            errs = self._snapshot_err(started_at)
             if all(e == DM_ERR_ENABLED for e in errs.values()):
                 self.get_logger().info(
                     f'ch{self.channel}.id[{slot_str}] ENABLED '
@@ -351,7 +368,7 @@ class CalibrationNode(Node):
                 return True
             time.sleep(0.02)
         # timeout: log per-slot state for diagnosis
-        errs = self._snapshot_err()
+        errs = self._snapshot_err(started_at)
         bad = {s: e for s, e in errs.items() if e != DM_ERR_ENABLED}
         self.get_logger().error(
             f'ENABLE timed out after {timeout:.1f}s; '
@@ -361,24 +378,24 @@ class CalibrationNode(Node):
     def disable_all(self, timeout: float = 3.0,
                     stop_evt: Optional[threading.Event] = None) -> bool:
         """Publish DISABLE at 5 Hz until every tracked motor reports
-        MotorState.err != DM_ERR_ENABLED (i.e. disabled or in an error
+        MotorState.error_flags != DM_ERR_ENABLED (i.e. disabled or in an error
         state), or the timeout expires. Returns True iff confirmed."""
         # Burst a few zero-cmd frames first so the motors are passive when
         # DISABLE lands. Keep the 10 ms cmd ticker running -- we need the
         # motors to keep responding so we can read fresh err codes.
         arr = MotorCommandArray()
         arr.header.stamp = self.get_clock().now().to_msg()
-        arr.channel = self.channel
-        arr.motors = [
-            MotorCommand(id=j.slot, position=0.0, velocity=0.0,
-                         kp=0.0, kd=0.0, torque_ff=0.0)
+        arr.commands = [
+            MotorCommand(channel=self.channel, motor_index=j.slot, mode=MotorCommand.MODE_RUN, position=0.0, velocity=0.0,
+                         kp=0.0, kd=0.0, torque=0.0)
             for j in self.joints
         ]
         for _ in range(3):
             self._cmd_pub.publish(arr)
             time.sleep(0.01)
 
-        deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
+        deadline = started_at + timeout
         last_pub = 0.0
         slot_str = ','.join(str(j.slot) for j in self.joints)
         self.get_logger().info(
@@ -393,21 +410,18 @@ class CalibrationNode(Node):
             if now - last_pub >= 0.2:
                 self._publish_enable_msg(False)
                 last_pub = now
-            errs = self._snapshot_err()
-            # A None err means we haven't seen a real frame yet -- but if
-            # the motor never responded it's effectively disabled too, so
-            # we treat None as "not enabled" for the disable check.
-            if all(e != DM_ERR_ENABLED for e in errs.values()):
+            errs = self._snapshot_err(started_at)
+            if all(e is not None and e != DM_ERR_ENABLED for e in errs.values()):
                 self.get_logger().info(
                     f'ch{self.channel}.id[{slot_str}] DISABLED '
                     f'({self._format_err_table(errs)})')
                 return True
             time.sleep(0.05)
         # timeout
-        errs = self._snapshot_err()
-        bad = {s: e for s, e in errs.items() if e == DM_ERR_ENABLED}
+        errs = self._snapshot_err(started_at)
+        bad = {s: e for s, e in errs.items() if e is None or e == DM_ERR_ENABLED}
         self.get_logger().warn(
-            f'DISABLE timed out after {timeout:.1f}s; still enabled: '
+            f'DISABLE timed out after {timeout:.1f}s; disable NOT confirmed: '
             f'{self._format_err_table(bad)}')
         return False
 
@@ -431,7 +445,12 @@ def _wait_enter(prompt: str, stop_evt: threading.Event) -> bool:
     sys.stdout.write(prompt)
     sys.stdout.flush()
     try:
-        input()
+        import select
+        while not stop_evt.is_set():
+            if select.select([sys.stdin], [], [], 0.1)[0]:
+                if sys.stdin.readline() == '':
+                    stop_evt.set()
+                break
     except (EOFError, KeyboardInterrupt):
         stop_evt.set()
         return False
@@ -570,10 +589,8 @@ def _calibrate_zero_pose(
                 'sample_spread': float(spread),
                 'sample_count': len(positions),
                 'zero_offset': float(zero_offset),
-                # Placeholder. We can't infer sign from a single capture;
-                # operator must hand-verify after launch and flip to -1
-                # in the YAML for any joint that reads backwards.
-                'axis_sign': 1,
+                'axis_sign': j.axis_sign,
+                'direction_verified': j.direction_verified,
             })
 
         if too_few:
@@ -626,13 +643,7 @@ def _calibrate_one(node: CalibrationNode, joint: JointSpec,
             elif display['phase'] == 'push':
                 line = f'  [{joint.name}] live: raw = {s[0]:+.4f} rad'
             else:
-                # verify phase: apply the just-captured zero_offset and show
-                # the URDF-frame angle. urdf = raw - zero_offset (axis_sign
-                # is assumed +1 here; the script emits axis_sign:1 as a
-                # placeholder and the operator flips it to -1 by hand in
-                # the merged offsets YAML for any joint that reads backwards).
-                # Also show degrees for sanity.
-                urdf = s[0] - display['zero_offset']
+                urdf = joint.axis_sign * (s[0] - display['zero_offset'])
                 line = (f'  [{joint.name}] verify: raw={s[0]:+.4f}  '
                         f'urdf={urdf:+.4f} rad  '
                         f'({math.degrees(urdf):+7.2f} deg)')
@@ -675,7 +686,7 @@ def _calibrate_one(node: CalibrationNode, joint: JointSpec,
                       f'(> {cfg.max_motion_rad}). Hold steady and retry.')
                 continue
 
-            zero_offset = median - joint.urdf_pos_at_limit
+            zero_offset = reference_offset(median, joint.urdf_pos_at_limit, joint.axis_sign)
 
             print()
             print(f'  CAPTURED: raw_at_limit = {median:+.4f} rad  '
@@ -718,19 +729,24 @@ def _calibrate_one(node: CalibrationNode, joint: JointSpec,
                 'reference': f'hard-stop-{joint.limit_side}',
                 'limit_side': joint.limit_side,
                 'urdf_pos_at_reference': joint.urdf_pos_at_limit,
+                'original_reference_angle': joint.reference_original,
+                'reference_confirmed': joint.reference_confirmed,
                 'raw_at_reference': float(median),
                 'sample_spread': float(spread),
                 'sample_count': len(positions),
                 'zero_offset': float(zero_offset),
-                # Placeholder. We can't infer sign from a single hard-stop
-                # push (only one direction is observed); operator must
-                # hand-verify after launch and flip to -1 in the YAML for
-                # any joint that reads backwards.
-                'axis_sign': 1,
+                'axis_sign': joint.axis_sign,
+                'direction_verified': joint.direction_verified,
             }
     finally:
         live_stop.set()
         live_t.join(timeout=0.5)
+
+
+def reference_offset(raw: float, reference: float, sign: int) -> float:
+    if sign not in (-1, 1) or not all(math.isfinite(v) for v in (raw, reference)):
+        raise ValueError('Invalid reference capture/sign')
+    return raw - sign * reference
 
 
 def _write_offsets_yaml(path: Path, channel: int, mode: str,
@@ -739,11 +755,9 @@ def _write_offsets_yaml(path: Path, channel: int, mode: str,
         'identified_at': datetime.datetime.now().isoformat(timespec='seconds'),
         'channel': channel,
         'mode': mode,
-        'note': ('zero_offset = raw_at_reference - urdf_pos_at_reference. '
+        'note': ('zero_offset = raw_at_reference - axis_sign * urdf_pos_at_reference. '
                  'Apply at runtime as urdf_pos = axis_sign * (raw_pos - '
-                 'zero_offset). axis_sign defaults to 1; verify each joint '
-                 'after launch by hand-pushing and watching /joint_states, '
-                 'flip to -1 here for any joint that moves backwards.'),
+                 'zero_offset). Do not change axis_sign without recomputing zero_offset.'),
         'offsets': results,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -753,20 +767,53 @@ def _write_offsets_yaml(path: Path, channel: int, mode: str,
 
 # --------------- main ---------------
 
+def review_limit_references(cfg, input_path, reviewed_path, stop_evt):
+    """Run the visual gate using a plain ROS node, with no motor publishers."""
+    if input_path.resolve() == reviewed_path.resolve():
+        raise ValueError('Save reviewed references to a separate file, not the input YAML')
+    node = Node('joint_limit_reference_review')
+    preview = None
+    try:
+        preview = DirectionPreview(node, cfg, limit_review=True)
+        preview.wait_ready(stop_evt)
+        if not preview.review_limits(stop_evt):
+            return False
+        data = yaml.safe_load(input_path.read_text())
+        by_name = {j.name: j for j in cfg.joints}
+        for entry in data['joints']:
+            joint = by_name[entry['name']]
+            entry['urdf_pos_at_limit'] = joint.urdf_pos_at_limit
+            entry['reference_review'] = {
+                'original_angle_rad': joint.reference_original,
+                'confirmed_angle_rad': joint.urdf_pos_at_limit,
+                'confirmed': True}
+        data['reference_reviewed_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+        reviewed_path.parent.mkdir(parents=True, exist_ok=True)
+        reviewed_path.write_text(yaml.safe_dump(data, sort_keys=False))
+        print(f'Reviewed mechanical reference angles saved to {reviewed_path}')
+        return True
+    finally:
+        if preview is not None:
+            preview.close()
+        node.destroy_node()
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
-        description='Manual joint zero calibration (hard-stop or zero-pose).',
+        description='Direction preview followed by manual reference calibration.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--mode', default='hard-stop',
-                   choices=('hard-stop', 'zero-pose'),
+                   choices=('hard-stop', 'zero-pose', 'direction', 'limit-preview'),
                    help='hard-stop: per-joint push to single-side limit. '
                         'zero-pose: arm placed at URDF zero by fixture, '
-                        'one-shot capture of all joints.')
+                        'one-shot capture of all joints. direction: MuJoCo incremental direction check. '
+                        'limit-preview: edit and confirm reference angles without motor commands.')
     p.add_argument('--calibration-yaml', default='joint_calibration.yaml',
                    help='Input config; limit_side/urdf_pos_at_limit are '
                         'optional in zero-pose mode.')
     p.add_argument('--output', default='joint_offsets.yaml',
                    help='Where to write the resulting zero offsets.')
+    p.add_argument('--directions-yaml', type=Path,
+                   help='Verified direction file from --mode direction; used for reference capture.')
     return p.parse_args(argv)
 
 
@@ -775,18 +822,24 @@ def main(argv=None) -> int:
 
     in_path = Path(args.calibration_yaml).expanduser().resolve()
     out_path = Path(args.output).expanduser().resolve()
+    if args.mode == 'limit-preview' and args.output == 'joint_offsets.yaml':
+        out_path = in_path.with_name(in_path.stem + '_reviewed.yaml')
 
     try:
         cfg = load_calibration_config(in_path)
+        if args.mode == 'direction':
+            if 'offset' in out_path.stem.lower():
+                raise ValueError('Direction-only output must use a separate file, e.g. joint_directions_right.yaml')
+        elif args.directions_yaml:
+            load_directions(yaml.safe_load(args.directions_yaml.read_text()), cfg)
+        elif args.mode != 'limit-preview':
+            print('WARNING: no direction file; using unverified axis_sign=+1. '
+                  'Use --mode direction first, then --directions-yaml.')
     except (FileNotFoundError, KeyError, ValueError) as e:
         print(f'Failed to load {in_path}: {e}', file=sys.stderr)
         return 2
 
     rclpy.init(args=argv)
-    exec_ = MultiThreadedExecutor(num_threads=2)
-    node = CalibrationNode(channel=cfg.channel, joints=cfg.joints)
-    exec_.add_node(node)
-
     stop_evt = threading.Event()
 
     def _sig(*_):
@@ -794,11 +847,34 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, _sig)
     signal.signal(signal.SIGTERM, _sig)
 
+    if args.mode in ('hard-stop', 'limit-preview'):
+        reviewed_path = (out_path if args.mode == 'limit-preview'
+                         else out_path.with_name(out_path.stem + '_references.yaml'))
+        try:
+            if not review_limit_references(cfg, in_path, reviewed_path, stop_evt):
+                rclpy.shutdown()
+                return 130
+        except Exception as exc:
+            print(f'Reference review failed: {exc}', file=sys.stderr)
+            rclpy.shutdown()
+            return 2
+        if args.mode == 'limit-preview':
+            rclpy.shutdown()
+            return 0
+
+    exec_ = MultiThreadedExecutor(num_threads=2)
+    node = CalibrationNode(channel=cfg.channel, joints=cfg.joints)
+    exec_.add_node(node)
+
+    spin_stop = threading.Event()
+
     def _spin():
         try:
-            while rclpy.ok() and not stop_evt.is_set():
+            # Keep feedback alive during the final disable handshake, including Ctrl-C.
+            while rclpy.ok() and not spin_stop.is_set():
                 exec_.spin_once(timeout_sec=0.1)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            node.get_logger().error(f'Calibration feedback executor failed: {exc}')
             stop_evt.set()
     spin_t = threading.Thread(target=_spin, daemon=True)
     spin_t.start()
@@ -821,6 +897,8 @@ def main(argv=None) -> int:
             rc_pre = 0
         if stop_evt.is_set():
             try:
+                spin_stop.set()
+                spin_t.join(timeout=1.0)
                 exec_.shutdown()
                 node.destroy_node()
             except Exception:  # noqa: BLE001
@@ -831,8 +909,13 @@ def main(argv=None) -> int:
 
     rc = 0
     results: List[Dict[str, float]] = []
+    preview = None
     if not stop_evt.is_set():
         try:
+            if args.mode == 'direction':
+                # Window/model failures must happen before any ENABLE command.
+                preview = DirectionPreview(node, cfg)
+                preview.wait_ready(stop_evt)
             if not node.enable_all(timeout=5.0, stop_evt=stop_evt):
                 # enable_all already logged the failure detail.
                 stop_evt.set()
@@ -842,7 +925,13 @@ def main(argv=None) -> int:
             print('All motors enabled in passive mode (kp=kd=tau_ff=0).')
             print('They will freewheel; support the arm before pushing.')
 
-            if args.mode == 'zero-pose':
+            if args.mode == 'direction':
+                r = preview.run(stop_evt)
+                if r is None:
+                    rc = 130
+                else:
+                    results = r
+            elif args.mode == 'zero-pose':
                 r = _calibrate_zero_pose(node, cfg, stop_evt)
                 if r is None:
                     print('Calibration aborted by user.')
@@ -868,20 +957,33 @@ def main(argv=None) -> int:
     # always disable. We do NOT pass stop_evt here -- a Ctrl-C should
     # still try to land the disable frames on the bus before exit.
     try:
-        node.disable_all(timeout=3.0)
-    except Exception:  # noqa: BLE001
-        pass
+        if not node.disable_all(timeout=3.0):
+            rc = rc or 6
+    except Exception as exc:  # noqa: BLE001
+        node.get_logger().error(f'Disable NOT confirmed: {exc}')
+        rc = rc or 6
 
     if results and rc == 0:
         try:
-            _write_offsets_yaml(out_path, cfg.channel, args.mode, results)
+            if args.mode == 'direction':
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(yaml.safe_dump({
+                    'mode': 'direction', 'channel': cfg.channel,
+                    'identified_at': datetime.datetime.now().isoformat(timespec='seconds'),
+                    'directions': results}, sort_keys=False))
+            else:
+                _write_offsets_yaml(out_path, cfg.channel, args.mode, results)
             print()
-            print(f'Wrote {len(results)} offset(s) to {out_path}')
+            print(f'Wrote {len(results)} {args.mode} calibration entries to {out_path}')
         except Exception as e:  # noqa: BLE001
             print(f'Failed to write {out_path}: {e}', file=sys.stderr)
             rc = 4
 
+    if preview is not None:
+        preview.close()
     try:
+        spin_stop.set()
+        spin_t.join(timeout=1.0)
         exec_.shutdown()
         node.destroy_node()
     except Exception:  # noqa: BLE001

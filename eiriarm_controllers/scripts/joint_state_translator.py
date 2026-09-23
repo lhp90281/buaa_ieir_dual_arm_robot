@@ -2,7 +2,7 @@
 """Translate raw DM motor states to URDF joint states.
 
 Pipeline:
-    /motor/ch{N}/state  (usb2can/MotorStateArray, raw motor frame)
+    /w3_robot_bridge_node/state  (w3_robot_bridge/MotorStateArray, raw motor frame)
         |
         |  per joint (channel, slot):
         |      urdf = wrap_to_window(sign * (raw - zero_offset),
@@ -45,7 +45,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import JointState
-from usb2can.msg import MotorStateArray
+from w3_robot_bridge.msg import MotorStateArray
 
 
 @dataclasses.dataclass
@@ -119,16 +119,9 @@ class JointStateTranslator(Node):
 
         self._pub = self.create_publisher(JointState, topic, 10)
 
-        # one subscription per channel
-        self._subs = []
-        for ch in self._channels:
-            sub = self.create_subscription(
-                MotorStateArray,
-                f'/motor/ch{ch}/state',
-                lambda msg, c=ch: self._on_state(c, msg),
-                qos_profile_sensor_data,
-            )
-            self._subs.append(sub)
+        self._sub = self.create_subscription(
+            MotorStateArray, '/w3_robot_bridge_node/state',
+            self._on_state, qos_profile_sensor_data)
 
         period = 1.0 / max(1.0, rate_hz)
         self._timer = self.create_timer(period, self._on_timer)
@@ -145,8 +138,9 @@ class JointStateTranslator(Node):
                 f'center={j.range_center:+.3f}  wrap_safe={j.wrap_safe}'
             )
 
-    def _on_state(self, ch: int, msg: MotorStateArray):
-        self._latest[ch] = msg
+    def _on_state(self, msg: MotorStateArray):
+        for ch in self._channels:
+            self._latest[ch] = msg
 
     def _on_timer(self):
         # require at least one frame on every channel before publishing
@@ -158,9 +152,11 @@ class JointStateTranslator(Node):
             arr = self._latest[j.channel]
             if arr is None:
                 continue
-            if j.slot >= len(arr.motors):
+            m = next((m for m in arr.motors
+                      if m.channel == j.channel and m.motor_index == j.slot
+                      and m.online), None)
+            if m is None or not all(math.isfinite(v) for v in (m.position, m.velocity, m.torque)):
                 continue
-            m = arr.motors[j.slot]
             urdf_pos = raw_to_urdf(
                 m.position, j.zero_offset, j.axis_sign,
                 j.range_center, j.wrap_safe,
@@ -176,12 +172,14 @@ class JointStateTranslator(Node):
 
 def build_joint_maps(offsets_data: Dict, urdf_limits: Dict[str, Dict[str, float]],
                      logger=None) -> List[JointMap]:
-    default_channel = int(offsets_data.get('channel', 1))
+    default_channel = int(offsets_data.get('channel', 0))
     out: List[JointMap] = []
     for entry in offsets_data['offsets']:
         name = entry['name']
         slot = int(entry['slot'])
         ch = int(entry.get('channel', default_channel))
+        if ch not in (0, 1):
+            raise ValueError('W3 channel must be 0 (left) or 1 (right)')
         zero_offset = float(entry['zero_offset'])
         axis_sign = float(entry.get('axis_sign', 1.0))
         if axis_sign not in (1.0, -1.0):

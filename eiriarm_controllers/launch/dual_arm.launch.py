@@ -12,8 +12,8 @@ The bringup wrapper `real_robot.launch.py` only forwards the args below to
 this file; it does not start the bridge itself. Run this launch directly only
 if the bridge is already up.
 
-(Single board, two channels: ch1 = left arm, ch2 = right arm. Grippers on
-ch1.id7 / ch2.id7 are NOT exposed to ros2_control here -- they are owned by
+(Single board, two channels: can0 = left arm, can1 = right arm. Grippers on
+can0.slot7 / can1.slot7 are NOT exposed to ros2_control here -- they are owned by
 the standalone gripper_controller_node.)
 
 Brings up:
@@ -28,7 +28,7 @@ Brings up:
      touching `ros2 control switch_controllers`.
   6. cartesian_position_controller (LOADED for dual-arm mode; ACTIVE iff
      controller:=cartesian_position, otherwise inactive).
-  7. gripper_controller standalone node (talks to ch1.id7 / ch2.id7
+  7. gripper_controller standalone node (talks to can0.slot7 / can1.slot7
      directly, auto-calibrates open->close on startup; toggle with
      gripper:=true|false).
 
@@ -53,8 +53,8 @@ Usage:
   ros2 launch eiriarm_controllers dual_arm.launch.py gripper:=false
 
 Notes for single-arm mode:
-  * The full dual-arm URDF (both arms + grippers) is ALWAYS loaded into
-    Pinocchio so gravity compensation stays correct.  Only the <ros2_control>
+  * Both arms are loaded into Pinocchio; gripper:=false removes their payloads.
+    Only the <ros2_control>
     block (and the per-joint arrays in controllers.yaml) is sliced to one arm.
   * controller:=cartesian_position is rejected in single-arm mode because the
     controller is a dual-arm coordinator.
@@ -65,13 +65,15 @@ Notes for single-arm mode:
 
 import os
 import tempfile
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import yaml
+import xacro
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -225,6 +227,28 @@ def _controllers_yaml(
 _VALID_CONTROLLERS = ('gravity', 'joint_position', 'cartesian_position')
 
 
+def build_robot_description(xacro_path, offsets_yaml, arms, gripper):
+    document = xacro.process_file(
+        xacro_path, mappings={'offsets_yaml': offsets_yaml, 'arms': arms})
+    root = ET.fromstring(document.toxml())
+    if not gripper:
+        # Remove the complete payload subtrees, preserving the arm tool frames.
+        removed = {'left_gripper_gripper_base_link', 'right_gripper_gripper_base_link'}
+        joints = root.findall('joint')
+        while True:
+            children = {j.find('child').get('link') for j in joints
+                        if j.find('parent').get('link') in removed}
+            if children <= removed:
+                break
+            removed.update(children)
+        for element in list(root):
+            if ((element.tag == 'link' and element.get('name') in removed)
+                    or (element.tag == 'joint'
+                        and element.find('child').get('link') in removed)):
+                root.remove(element)
+    return ET.tostring(root, encoding='unicode')
+
+
 def launch_setup(context, *args, **kwargs):
     arms = LaunchConfiguration('arms').perform(context).strip().lower()
     if arms not in _ARM_SLICE:
@@ -277,16 +301,9 @@ def launch_setup(context, *args, **kwargs):
         teleop_role,
         teleop_gains_yaml)
 
-    robot_description = {
-        'robot_description': ParameterValue(
-            Command([
-                'xacro ', xacro_path,
-                ' offsets_yaml:=', offsets_yaml,
-                ' arms:=', arms,
-            ]),
-            value_type=str,
-        )
-    }
+    robot_description = {'robot_description': ParameterValue(
+        build_robot_description(xacro_path.perform(context), offsets_yaml,
+                                arms, enable_gripper), value_type=str)}
 
     robot_state_publisher = Node(
         package='robot_state_publisher',
@@ -369,7 +386,7 @@ def launch_setup(context, *args, **kwargs):
     # the sliced yaml because it is a dual-arm coordinator.
 
     # Gripper controller: standalone node OUTSIDE ros2_control. Talks directly
-    # to /motor/ch1/cmd (left, slot 7) and /motor/ch2/cmd (right, slot 7),
+    # to W3 channels 0/1, slot 7,
     # auto-runs an open->close calibration on startup. Disable in single-arm
     # mode for the OFF channel by tweaking left_enabled / right_enabled in
     # gripper_controller.yaml; here we just toggle the whole node.
@@ -381,7 +398,7 @@ def launch_setup(context, *args, **kwargs):
         if friction_model_yaml:
             gripper_params.append({'friction_model_yaml': friction_model_yaml})
         # Disable the off channel automatically in single-arm mode so we don't
-        # spam /motor/ch{2,1}/cmd for a gripper that isn't physically wired.
+        # command the other arm's gripper.
         if arms == 'left':
             gripper_params.append({'right_enabled': False})
         elif arms == 'right':
@@ -408,7 +425,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'offsets_yaml',
-            default_value='joint_offsets_dual.yaml',
+            default_value='src/ros2_ws_config/joint_offsets_dual.yaml',
             description=(
                 'Path to the 14-joint zero/sign calibration YAML. Relative '
                 'paths are resolved from the launch working directory.'
@@ -416,7 +433,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'friction_model_yaml',
-            default_value='friction_model.yaml',
+            default_value='src/ros2_ws_config/friction_model.yaml',
             description=(
                 'Path to the friction model YAML. Relative paths are '
                 'resolved from the launch working directory.'
@@ -456,8 +473,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'gripper',
-            default_value='true',
-            description='Start the gripper_controller standalone node (auto-calibrates on startup)',
+            default_value='false',
+            description='Grippers installed: include their mass/model and start their controller',
             choices=['true', 'false'],
         ),
         DeclareLaunchArgument(

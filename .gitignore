@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+build/
+install/
+log/
+.pytest_cache/
+.coverage
+recordings/
+MUJOCO_LOG.TXT
+*.core
+.env
+.venv/
+venv/
+compile_commands.json
+
+# Per-robot calibration results remain local; never publish them as defaults.
+/ros2_ws_config/joint_offsets*.yaml*
+/ros2_ws_config/joint_directions*.yaml*
+/ros2_ws_config/joint_calibration_*_reviewed.yaml*

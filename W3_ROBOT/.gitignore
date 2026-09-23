@@ -1,0 +1,26 @@
+# Build
+build/
+install/
+log/
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup
+*~
+*.swp
+*.bak
+
+# Reference (large files)
+参考手册/
+*.rar
+*.pdf

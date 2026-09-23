@@ -417,6 +417,8 @@ class TeleopJointBridge(Node):
         return local, remote, recent, remote_aligned, remote_enabled, peer_enabled_seen
 
     def _on_gripper_state(self, side: str, msg: Float32MultiArray):
+        if self.args.gripper != 'true':
+            return
         if not msg.data:
             return
         ratio = max(0.0, min(1.0, float(msg.data[0])))
@@ -429,6 +431,8 @@ class TeleopJointBridge(Node):
             self.local_grippers[side] = ratio
 
     def _publish_gripper_command(self, side: str, command: str):
+        if self.args.gripper != 'true':
+            return
         msg = String()
         msg.data = command
         if side == 'left':
@@ -449,6 +453,8 @@ class TeleopJointBridge(Node):
             self._publish_gripper_command(side, 'hold')
 
     def _publish_gripper_targets(self):
+        if self.args.gripper != 'true':
+            return
         with self._lock:
             targets = dict(self.remote_grippers)
         for side, ratio in targets.items():
@@ -759,6 +765,8 @@ def parse_args(argv):
                    default='cartesian_position_controller')
     p.add_argument('--joints', nargs='*', default=None,
                    help='optional explicit joint list; default queries controller')
+    p.add_argument('--gripper', choices=('true', 'false'), default='false',
+                   help='Enable gripper teleoperation only when physically installed')
     args = p.parse_args(argv)
     if not args.peer_host:
         p.error('--peer-host is required')

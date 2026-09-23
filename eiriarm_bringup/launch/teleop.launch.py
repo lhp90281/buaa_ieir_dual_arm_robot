@@ -14,6 +14,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     args = [
+        DeclareLaunchArgument('gripper', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument(
             'role',
             description="This host's teleop role: master or slave",
@@ -87,6 +88,7 @@ def generate_launch_description():
         name='teleop_joint_bridge',
         output='screen',
         arguments=[
+            '--gripper', LaunchConfiguration('gripper'),
             '--role', LaunchConfiguration('role'),
             '--mode', LaunchConfiguration('mode'),
             '--peer-host', LaunchConfiguration('peer_host'),

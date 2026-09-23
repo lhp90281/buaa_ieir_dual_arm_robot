@@ -1,10 +1,9 @@
 # =============================================================================
-# Gripper Controller (real hardware, DM4310 on usb2can ch1.id7 / ch2.id7)
+# Gripper Controller (real hardware, DM4310 on W3 can0.slot7 / can1.slot7)
 #
-# Standalone node, NOT a ros2_control plugin. Talks directly to the dm_motor
-# bridge:
-#     /motor/ch1/state, /motor/ch1/cmd  (left  gripper, slot 7)
-#     /motor/ch2/state, /motor/ch2/cmd  (right gripper, slot 7)
+# Standalone node, NOT a ros2_control plugin. W3 topics:
+#     /w3_robot_bridge_node/state
+#     /w3_robot_bridge_node/commands
 #
 # Auto-calibrates open->close on every startup (run-time only, no persistence)
 # because absolute motor angle is lost on power cycle. Calibration logs the
@@ -18,14 +17,14 @@
 gripper_controller:
   ros__parameters:
     # ---- node-wide ----
-    control_rate: 50.0                  # Hz; matches dm_motor_bridge sample rate
+    control_rate: 50.0                  # Hz; gripper controller update rate
 
     # Friction compensation (DM4310 row of friction_model.yaml). Off by
     # default; turn on with the launch arg (or override here).
     friction_compensation_enabled: true
     # Runtime launch files override this with an absolute path resolved from
     # friction_model_yaml:=...; keep the checked-in default portable.
-    friction_model_yaml: "friction_model.yaml"
+    friction_model_yaml: "src/ros2_ws_config/friction_model.yaml"
     friction_gain: 0.5                    # scale of (coulomb + viscous*v) FF
     friction_deadband: 0.05               # rad/s; below this, friction_ff = 0
     velocity_filter_alpha: 0.9            # 50 Hz low-pass for measured-velocity friction FF
@@ -35,7 +34,7 @@ gripper_controller:
     right_enabled: true
 
     # =========================================================================
-    # LEFT gripper (ch1.id7)
+    # LEFT gripper (can0.slot7)
     # =========================================================================
     # Mechanical wiring: which sign of motor radians closes the fingers.
     # Flip to -1 if your gear rotates the opposite way; if you get this wrong,
@@ -43,7 +42,7 @@ gripper_controller:
     # and cal_kp -- but the OPEN/CLOSE labels would be swapped).
     left_close_motor_direction: -1
 
-    # Motor envelope (must match dm_motors_eiriarm.yaml entry for ch1.id7).
+    # Motor envelope (must match W3 motor profile for can0.slot7).
     left_pos_max: 12.5                    # rad; unique-decoding window half-width
     left_vel_max: 50.0                    # rad/s
     left_tor_max: 10.0                    # Nm
@@ -76,8 +75,7 @@ gripper_controller:
 
     # ENABLING phase (mirrors dm_hardware_interface for arm motors):
     #   - publish FC at this period (default 50 Hz = 20 ms)
-    #   - publish a zero-impedance MotorCommand every tick to keep the STM32
-    #     watchdog (~100 ms) quiet
+    #   - publish a zero-impedance MODE_RUN command every tick
     #   - declare ENABLED only after err==1 for `enable_confirm_frames` ticks
     #     in a row; if not enabled within `enable_timeout_s`, latch FAILED.
     left_enable_pub_period_s: 0.02        # 50 Hz FC bursts
@@ -85,7 +83,7 @@ gripper_controller:
     left_enable_confirm_frames: 5
 
     # =========================================================================
-    # RIGHT gripper (ch2.id7) -- mirror of LEFT; tweak independently if needed.
+    # RIGHT gripper (can1.slot7) -- mirror of LEFT; tweak independently if needed.
     # =========================================================================
     right_close_motor_direction: -1
     right_pos_max: 12.5

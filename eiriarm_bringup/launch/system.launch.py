@@ -12,7 +12,7 @@ Usage:
   # Cartesian position controller
   ros2 launch eiriarm_bringup system.launch.py controller_type:=cartesian_position
 
-  # Enable standalone gripper controller (requires /motor/chN topics)
+  # Enable standalone gripper controller (requires W3 bridge topics)
   ros2 launch eiriarm_bringup system.launch.py enable_gripper:=true
 """
 

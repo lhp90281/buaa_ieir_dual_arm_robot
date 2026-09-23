@@ -13,15 +13,14 @@
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/state.hpp"
-#include "usb2can/msg/motor_command_array.hpp"
-#include "usb2can/msg/motor_enable_array.hpp"
-#include "usb2can/msg/motor_state_array.hpp"
+#include "w3_robot_bridge/msg/motor_command_array.hpp"
+#include "w3_robot_bridge/msg/motor_state_array.hpp"
 
 namespace eiriarm_controllers
 {
 
 /**
- * @brief ros2_control SystemInterface that talks directly to DM motors over usb2can.
+ * @brief ros2_control SystemInterface that talks directly to DM motors over W3 bridge.
  *
  * State interfaces (per joint, in URDF frame):
  *   - position
@@ -40,7 +39,7 @@ namespace eiriarm_controllers
  *
  * URDF ros2_control snippet (per joint):
  *   <joint name="joint1">
- *     <param name="channel">1</param>
+ *     <param name="channel">0</param>
  *     <param name="slot">0</param>
  *     <param name="motor_type">DM8009</param>
  *     <param name="urdf_lower">-3.14</param>
@@ -58,7 +57,7 @@ namespace eiriarm_controllers
  * Hardware-level params (in <hardware> block):
  *   <param name="offsets_yaml">/abs/path/to/joint_offsets.yaml</param>
  *   <param name="auto_enable">true</param>           (default true)
- *   <param name="motor_topic_ns">/motor</param>      (default /motor)
+ *   <param name="motor_topic_ns">/w3_robot_bridge_node</param>      (default)
  */
 class DMHardwareInterface : public hardware_interface::SystemInterface
 {
@@ -91,7 +90,7 @@ private:
   struct JointCfg
   {
     std::string name;
-    int channel{1};
+    int channel{0};
     int slot{0};
     std::string motor_type;
     // calibration (from offsets yaml)
@@ -128,7 +127,7 @@ private:
                                   double & vel_max,
                                   double & tor_max);
   bool load_offsets_yaml(const std::string & path);
-  void on_motor_state(int channel, const usb2can::msg::MotorStateArray::SharedPtr msg);
+  void on_motor_state(const w3_robot_bridge::msg::MotorStateArray::SharedPtr msg);
   void publish_enable_all(bool enable);
   void publish_zero_command_all();
 
@@ -152,12 +151,10 @@ private:
 
   // ---- ROS plumbing ----
   rclcpp::Node::SharedPtr node_;
-  std::map<int, rclcpp::Subscription<usb2can::msg::MotorStateArray>::SharedPtr> state_subs_;
-  std::map<int, rclcpp::Publisher<usb2can::msg::MotorCommandArray>::SharedPtr> cmd_pubs_;
-  std::map<int, rclcpp::Publisher<usb2can::msg::MotorEnableArray>::SharedPtr> enable_pubs_;
-  std::map<int, usb2can::msg::MotorStateArray::SharedPtr> latest_state_;
+  rclcpp::Subscription<w3_robot_bridge::msg::MotorStateArray>::SharedPtr state_sub_;
+  rclcpp::Publisher<w3_robot_bridge::msg::MotorCommandArray>::SharedPtr cmd_pub_;
   std::map<int, bool> state_seen_;
-  // Per-joint MotorState.err code from the last *non-sentinel* frame.
+  // Per-joint W3 error_flags from the last finite, online frame.
   // -1 means "no real state observed yet". DM motor state code:
   //   0 = disabled, 1 = enabled (MIT mode), 8..14 = various error states
   //   (overvoltage / undervoltage / overcurrent / overtemp / comm-lost /
@@ -167,19 +164,13 @@ private:
   //   request-response), so err is the only reliable indicator.
   std::vector<int> last_err_;
 
-  // Last *non-sentinel* raw position (motor frame, multi-turn, NOT wrapped)
-  // per joint. write() uses this to mirror pos_cmd <- pos_actual whenever
-  // the controller runs in pure-torque mode (kp==0 && kd==0), so that the
-  // STM32 watchdog fallback (kp=1, kd=1, last pos_cmd) cannot snap the
-  // motor toward a stale target on a comm drop. Initialized to 0 -- safe
-  // because on_activate() only succeeds after every motor has reported
-  // err=1, which means at least one non-sentinel state frame was received
-  // and this vector has been populated for every joint.
+  // Last valid raw position (motor frame, multi-turn, NOT wrapped).
+  // Keep pure-torque commands aligned with the latest raw motor position.
   std::vector<double> last_pos_raw_;
 
   // ---- behaviour params ----
   std::string offsets_yaml_path_;
-  std::string motor_topic_ns_{"/motor"};
+  std::string motor_topic_ns_{"/w3_robot_bridge_node"};
   bool auto_enable_{true};
 
   // When set to true by on_deactivate, write() emits zero-cmd frames

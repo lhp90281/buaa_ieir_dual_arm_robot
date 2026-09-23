@@ -18,7 +18,7 @@ find_package(realtime_tools REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
-find_package(usb2can REQUIRED)
+find_package(w3_robot_bridge REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 include_directories(include)
@@ -166,7 +166,7 @@ ament_target_dependencies(topic_based_hardware_interface
   sensor_msgs
 )
 
-# DM Hardware Interface (direct usb2can <-> ros2_control)
+# DM Hardware Interface (W3 SocketCAN <-> ros2_control)
 add_library(dm_hardware_interface SHARED
   src/dm_hardware_interface.cpp
 )
@@ -185,7 +185,7 @@ ament_target_dependencies(dm_hardware_interface
   rclcpp_lifecycle
   hardware_interface
   pluginlib
-  usb2can
+  w3_robot_bridge
 )
 
 # Export controller plugins
@@ -221,7 +221,7 @@ target_link_libraries(gripper_controller_node
 ament_target_dependencies(gripper_controller_node
   rclcpp
   std_msgs
-  usb2can
+  w3_robot_bridge
 )
 
 install(TARGETS gripper_controller_node
@@ -255,6 +255,12 @@ install(PROGRAMS scripts/joint_zero_calibration.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME joint_zero_calibration
 )
+install(FILES scripts/calibration_direction.py scripts/calibration_seek.py
+  scripts/joint_zero_calibration.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/joint_auto_calibration.py
+  DESTINATION lib/${PROJECT_NAME} RENAME joint_auto_calibration)
+install(PROGRAMS scripts/joint_auto_calibration.py
+  DESTINATION lib/${PROJECT_NAME} RENAME joint_manual_calibration)
 
 install(PROGRAMS scripts/joint_state_translator.py
   DESTINATION lib/${PROJECT_NAME}
@@ -307,5 +313,12 @@ install(FILES
   dm_hardware_interface.xml
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(w3_migration test/test_w3_migration.py TIMEOUT 60)
+  ament_add_pytest_test(calibration_seek test/test_calibration_seek.py TIMEOUT 60)
+  ament_add_pytest_test(distribution test/test_distribution.py TIMEOUT 60)
+endif()
 
 ament_package()

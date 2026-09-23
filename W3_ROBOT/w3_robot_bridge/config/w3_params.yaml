@@ -1,0 +1,27 @@
+# ROS2 parameters for w3_robot_bridge_node
+# These are simple flat params that ROS2 can parse directly.
+# The complex channel/motor config is in w3_robot_bridge.yaml
+# (loaded by the bridge via yaml-cpp).
+
+w3_robot_bridge_node:
+  ros__parameters:
+    # Path to the full bridge config. Empty = auto-detect from package share.
+    config_path: ""
+
+    # Reported control rate; actual scheduling uses each channel's config.
+    control_rate_hz: 350.0
+
+    # ROS state publish rate (Hz)
+    state_publish_hz: 350.0
+
+    # Motor offline detection timeout (seconds)
+    # Allow 50ms without feedback before marking a motor offline.
+    # During idle (no user commands), watchdog DAMP keeps the motor alive.
+    feedback_timeout_s: 0.05
+
+    # Watchdog: 0.5s without command → damping brake
+    command_watchdog_s: 0.5
+    watchdog_damping_kd: 2.0
+
+    # Auto-enable all motors on startup
+    auto_enable_on_start: false

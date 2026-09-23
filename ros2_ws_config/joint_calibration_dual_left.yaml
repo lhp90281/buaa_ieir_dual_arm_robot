@@ -1,0 +1,72 @@
+# =============================================================================
+#  双大臂 — 左臂 (W3 channel 0 / can0) 关节零点标定输入  [hard-stop 模式]
+# =============================================================================
+# 用法:
+#   ros2 run eiriarm_controllers joint_zero_calibration \
+#       --mode hard-stop \
+#       --calibration-yaml joint_calibration_dual_left.yaml \
+#       --output joint_offsets_left.yaml
+#
+# 流程:
+#   - 脚本逐个 joint 提示 "把关节推到 <limit_side> 限位, ENTER"
+#   - 你撞死那一侧的硬挡块, 按 ENTER, 脚本采样 0.5s
+#   - 期间其他 joint 处于 zero-impedance 自由状态, 会被重力带动 -- 用手扶住
+#
+# 关键字段:
+#   limit_side          'negative' = 推到 URDF 较小角度那侧;
+#                       'positive' = 推到 URDF 较大角度那侧
+#                       选机械上 (a) 有刚性挡块 (b) 你能稳压住的一侧.
+#   urdf_pos_at_limit   该硬挡块对应的 URDF 角度 [rad], 来自 CAD 图纸.
+#                       默认值 = URDF <limit lower> 的值, 假设 "软限位=硬限位".
+#                       *** 检查你的机械, 不一致就改 ***.
+# =============================================================================
+
+channel: 0
+
+sampling:
+  window_sec: 0.5
+  min_samples: 20
+  max_motion_rad: 0.05
+
+joints:
+  - slot: 0
+    name: left_joint_0
+    motor_type: DM8009
+    limit_side: negative
+    urdf_pos_at_limit: -3.1416    # URDF lower; 检查 CAD
+
+  - slot: 1
+    name: left_joint_1
+    motor_type: DM8009
+    limit_side: positive
+    urdf_pos_at_limit: 0.4363    # URDF lower; 检查 CAD
+
+  - slot: 2
+    name: left_joint_2
+    motor_type: DM4340P
+    limit_side: negative
+    urdf_pos_at_limit: -2.6180    # URDF lower; 检查 CAD
+
+  - slot: 3
+    name: left_joint_3
+    motor_type: DM4340
+    limit_side: positive
+    urdf_pos_at_limit: 1.5708    # URDF lower; 检查 CAD
+
+  - slot: 4
+    name: left_joint_4
+    motor_type: DM4310
+    limit_side: negative
+    urdf_pos_at_limit: -2.6180    # URDF lower; 检查 CAD
+
+  - slot: 5
+    name: left_joint_5
+    motor_type: DM4310
+    limit_side: positive
+    urdf_pos_at_limit: 0.8098    # URDF lower; 检查 CAD
+
+  - slot: 6
+    name: left_joint_6
+    motor_type: DM4310
+    limit_side: negative
+    urdf_pos_at_limit: -1.5708    # URDF lower; 检查 CAD

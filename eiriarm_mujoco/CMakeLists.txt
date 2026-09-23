@@ -2,16 +2,22 @@ cmake_minimum_required(VERSION 3.8)
 project(eiriarm_mujoco)
 
 # 设置mujoco文件路径
-set(MUJOCO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mujoco)
+set(MUJOCO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mujoco" CACHE PATH
+  "MuJoCo 3.3.0 SDK (include/ and lib/); bundled SDK is Linux x86_64")
 set(MUJOCO_INCLUDE_DIR ${MUJOCO_DIR}/include)
 set(MUJOCO_LIB_DIR ${MUJOCO_DIR}/lib/libmujoco.so.3.3.0)
 
-# 设置构建时的 RPATH（编译阶段生效）
-set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-# 添加 MUJOCO_DIR/lib 到 RPATH 搜索路径
-set(CMAKE_INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib:${MUJOCO_DIR}/lib")
-# 防止系统路径覆盖自定义 RPATH
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+# Build against the SDK, install a self-contained runtime beside ROS binaries.
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_BUILD_RPATH "${MUJOCO_DIR}/lib")
+set(CMAKE_INSTALL_RPATH "$ORIGIN:$ORIGIN/..")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+if(NOT EXISTS "${MUJOCO_LIB_DIR}" OR NOT EXISTS "${MUJOCO_INCLUDE_DIR}/mujoco/mujoco.h")
+  message(FATAL_ERROR "Missing MuJoCo 3.3.0 SDK at ${MUJOCO_DIR}. See README.md; do not substitute a pip or system MuJoCo version.")
+endif()
+install(FILES "${MUJOCO_LIB_DIR}" DESTINATION lib)
+install(FILES third_party/mujoco/THIRD_PARTY_NOTICES third_party/mujoco/LICENSE
+  DESTINATION share/${PROJECT_NAME}/third_party/mujoco)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -35,6 +41,8 @@ find_package(robot_state_publisher REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 include_directories(include)
 
@@ -85,6 +93,13 @@ ament_target_dependencies(simulate
 # ==========================================================
 # 安装规则
 # ==========================================================
+
+add_executable(calibration_viewer src/calibration_viewer.cpp third_party/lodepng/lodepng.cpp)
+target_compile_features(calibration_viewer PUBLIC cxx_std_17)
+target_include_directories(calibration_viewer PRIVATE ${MUJOCO_INCLUDE_DIR} third_party/lodepng)
+target_link_libraries(calibration_viewer ${MUJOCO_LIB_DIR} glfw)
+ament_target_dependencies(calibration_viewer rclcpp sensor_msgs std_msgs ament_index_cpp)
+install(TARGETS calibration_viewer DESTINATION lib/${PROJECT_NAME})
 
 # 这里的 TARGETS 名字也要对应修改
 install(

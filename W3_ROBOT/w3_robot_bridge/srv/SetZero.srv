@@ -1,0 +1,7 @@
+# Set current position as zero for a motor.
+
+uint8 channel
+uint8 motor_index
+---
+bool   success
+string message

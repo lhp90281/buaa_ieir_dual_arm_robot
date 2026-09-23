@@ -18,7 +18,7 @@ the URDF axis, the zero pose will be correct but motion direction will
 still be inverted; verify and edit axis_sign manually after running this.
 
 Pre-conditions:
-    - dm_motor_bridge is running (publishing /motor/chN/state)
+    - W3 bridge is running (publishing /w3_robot_bridge_node/state)
     - every motor in the YAML is enabled (so it keeps replying state frames)
     - the robot is physically at URDF zero pose (and stationary)
 
@@ -29,6 +29,7 @@ Usage:
          --offsets joint_offsets_dual.yaml --apply  # writes file
 """
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -47,7 +48,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from usb2can.msg import MotorStateArray
+from w3_robot_bridge.msg import MotorStateArray
 
 
 def parse_args(argv=None):
@@ -70,7 +71,7 @@ def parse_args(argv=None):
 
 
 class RawCollector(Node):
-    """Subscribes to /motor/chN/state on every requested channel and stores
+    """Subscribes to /w3_robot_bridge_node/state on every requested channel and stores
     the latest MotorStateArray frame per channel. We dedupe by frame identity
     so only fresh frames are counted toward `samples`."""
 
@@ -78,17 +79,14 @@ class RawCollector(Node):
         super().__init__('zero_at_current_pose')
         self._latest: Dict[int, Optional[MotorStateArray]] = {ch: None for ch in channels}
         self._last_id: Dict[int, Optional[int]] = {ch: None for ch in channels}
-        self._subs = []
-        for ch in channels:
-            self._subs.append(self.create_subscription(
-                MotorStateArray, f'/motor/ch{ch}/state',
-                lambda msg, c=ch: self._on_state(c, msg),
-                qos_profile_sensor_data))
-        self.get_logger().info(
-            f'Subscribed to /motor/ch{{{",".join(str(c) for c in channels)}}}/state')
+        self._sub = self.create_subscription(
+            MotorStateArray, '/w3_robot_bridge_node/state',
+            self._on_state, qos_profile_sensor_data)
+        self.get_logger().info('Subscribed to /w3_robot_bridge_node/state')
 
-    def _on_state(self, ch: int, msg: MotorStateArray):
-        self._latest[ch] = msg
+    def _on_state(self, msg: MotorStateArray):
+        for ch in self._latest:
+            self._latest[ch] = msg
 
     def gather(self, channels: List[int], samples: int,
                timeout: float,
@@ -110,19 +108,18 @@ class RawCollector(Node):
                     continue
                 self._last_id[ch] = key
                 per_chan_count[ch] += 1
-                for slot, m in enumerate(msg.motors):
+                for m in msg.motors:
+                    if m.channel != ch:
+                        continue
+                    slot = m.motor_index
                     motor_key = (ch, slot)
                     if motor_key not in limits:
                         continue
-                    pos_max, vel_max, tor_max = limits[motor_key]
-                    if int(m.err) != 1:
+                    if not m.enabled:
                         skipped_err[motor_key] = skipped_err.get(motor_key, 0) + 1
                         continue
-                    is_sentinel = (
-                        abs(float(m.position) + pos_max) < 1e-3 and
-                        abs(float(m.velocity) + vel_max) < 1e-3 and
-                        abs(float(m.torque) + tor_max) < 1e-3)
-                    if is_sentinel:
+                    if not m.online or not all(math.isfinite(v) for v in (
+                            m.position, m.velocity, m.torque)):
                         skipped_sentinel[motor_key] = skipped_sentinel.get(motor_key, 0) + 1
                         continue
                     per_motor.setdefault(motor_key, []).append(float(m.position))
@@ -143,8 +140,10 @@ def main():
         print(f"ERROR: YAML must have a top-level 'offsets' list", file=sys.stderr)
         sys.exit(1)
 
-    default_ch = int(data.get('channel', 1))
+    default_ch = int(data.get('channel', 0))
     channels = sorted({int(e.get('channel', default_ch)) for e in data['offsets']})
+    if any(ch not in (0, 1) for ch in channels):
+        raise ValueError('W3 channels must be 0/1; update the offsets file channel mapping')
     motor_type_map = {}
     if args.motor_type_map and args.motor_type_map.exists():
         with args.motor_type_map.open('r') as f:

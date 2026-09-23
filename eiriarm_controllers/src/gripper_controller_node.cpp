@@ -2,8 +2,8 @@
 // eiriarm_controllers/gripper_controller_node.cpp
 //
 // Standalone gripper controller for two DM4310-driven parallel grippers wired
-// to usb2can ch1.id7 (left) and ch2.id7 (right). Talks directly to the
-// usb2can bridge via /motor/chN/cmd (MotorCommandArray) and /motor/chN/state
+// to W3 bridge can0.slot7 (left) and can1.slot7 (right). Talks directly to the
+// W3 bridge via /w3_robot_bridge_node/commands and /w3_robot_bridge_node/state
 // (MotorStateArray); intentionally OUTSIDE ros2_control so the gripper can
 // start/stop independently of the arm controllers (see comment in
 // dual_arm_ros2_control.urdf.xacro for the policy).
@@ -50,10 +50,8 @@
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <usb2can/msg/motor_command_array.hpp>
-#include <usb2can/msg/motor_enable.hpp>
-#include <usb2can/msg/motor_enable_array.hpp>
-#include <usb2can/msg/motor_state_array.hpp>
+#include <w3_robot_bridge/msg/motor_command_array.hpp>
+#include <w3_robot_bridge/msg/motor_state_array.hpp>
 
 #include <yaml-cpp/yaml.h>
 
@@ -111,7 +109,7 @@ struct Gripper
 {
   // identity
   std::string side;        // "left" / "right" (logging only)
-  uint8_t channel = 0;     // 1 or 2
+  uint8_t channel = 0;     // 0 = left/can0, 1 = right/can1
   uint8_t slot = 7;
   bool enabled = false;
 
@@ -175,7 +173,7 @@ struct Gripper
   // ENABLING tunables (filled from params at setup). Mirrors what
   // dm_hardware_interface does for the arm motors:
   //   - publish FC at high rate (50 Hz default) for several seconds
-  //   - publish zero MotorCommand every tick to keep STM32 watchdog quiet
+  //   - publish zero MotorCommand every tick to refresh the W3 command heartbeat
   //   - exit when err == 1 for enable_confirm_frames consecutive frames
   int enable_pub_period_ticks = 0;       // ticks between FC publishes
   int enable_timeout_ticks = 0;          // hard timeout for the whole phase
@@ -199,7 +197,7 @@ struct Gripper
   // Counts how many of slots 0..6 on this gripper's CAN channel report
   // err == DM_ERR_ENABLED (=1). The arm hw_interface owns slots 0..6 so
   // this is a clean signal that "the arm on my channel is up".
-  // Updated on every /motor/chN/state frame.
+  // Updated on every W3 state frame.
   int  arm_armed_count = 0;        // 0..7
   bool arm_was_ever_ready = false; // latched only while the arm remains ready
 };
@@ -230,8 +228,8 @@ public:
     const double rate = get_parameter("control_rate").as_double();
     dt_ = 1.0 / std::max(1.0, rate);
 
-    setup_gripper(left_,  "left",  /*channel=*/1);
-    setup_gripper(right_, "right", /*channel=*/2);
+    setup_gripper(left_,  "left",  /*channel=*/0);
+    setup_gripper(right_, "right", /*channel=*/1);
 
     // Friction model loaded once (DM4310 row applied to both grippers).
     const bool fric_enable = get_parameter("friction_compensation_enabled").as_bool();
@@ -248,16 +246,23 @@ public:
 
     // ---- ROS interfaces ----
     rclcpp::QoS state_qos(rclcpp::KeepLast(10));
-    state_qos.best_effort();  // matches dm_motor_bridge publisher QoS
+    state_qos.best_effort();  // matches W3 publisher QoS
 
     if (left_.enabled) {
-      left_state_sub_ = create_subscription<usb2can::msg::MotorStateArray>(
-        "/motor/ch1/state", state_qos,
-        [this](usb2can::msg::MotorStateArray::SharedPtr m) { on_state(left_, *m); });
-      left_cmd_pub_ = create_publisher<usb2can::msg::MotorCommandArray>(
-        "/motor/ch1/cmd", 10);
-      left_enable_pub_ = create_publisher<usb2can::msg::MotorEnableArray>(
-        "/motor/ch1/motor_enable", 10);
+      if (!state_sub_) {
+        state_sub_ = create_subscription<w3_robot_bridge::msg::MotorStateArray>(
+          "/w3_robot_bridge_node/state", state_qos,
+          [this](w3_robot_bridge::msg::MotorStateArray::SharedPtr m) {
+            on_state(left_, *m);
+            on_state(right_, *m);
+          });
+      }
+      if (!cmd_pub_) {
+        rclcpp::QoS cmd_qos(rclcpp::KeepLast(50));
+        cmd_qos.best_effort();
+        cmd_pub_ = create_publisher<w3_robot_bridge::msg::MotorCommandArray>(
+          "/w3_robot_bridge_node/commands", cmd_qos);
+      }
       left_cmd_sub_ = create_subscription<std_msgs::msg::String>(
         "~/left_gripper/command", 10,
         [this](std_msgs::msg::String::SharedPtr m) { on_command(left_, m->data); });
@@ -270,13 +275,20 @@ public:
         "~/left_gripper/teleop_state", 10);
     }
     if (right_.enabled) {
-      right_state_sub_ = create_subscription<usb2can::msg::MotorStateArray>(
-        "/motor/ch2/state", state_qos,
-        [this](usb2can::msg::MotorStateArray::SharedPtr m) { on_state(right_, *m); });
-      right_cmd_pub_ = create_publisher<usb2can::msg::MotorCommandArray>(
-        "/motor/ch2/cmd", 10);
-      right_enable_pub_ = create_publisher<usb2can::msg::MotorEnableArray>(
-        "/motor/ch2/motor_enable", 10);
+      if (!state_sub_) {
+        state_sub_ = create_subscription<w3_robot_bridge::msg::MotorStateArray>(
+          "/w3_robot_bridge_node/state", state_qos,
+          [this](w3_robot_bridge::msg::MotorStateArray::SharedPtr m) {
+            on_state(left_, *m);
+            on_state(right_, *m);
+          });
+      }
+      if (!cmd_pub_) {
+        rclcpp::QoS cmd_qos(rclcpp::KeepLast(50));
+        cmd_qos.best_effort();
+        cmd_pub_ = create_publisher<w3_robot_bridge::msg::MotorCommandArray>(
+          "/w3_robot_bridge_node/commands", cmd_qos);
+      }
       right_cmd_sub_ = create_subscription<std_msgs::msg::String>(
         "~/right_gripper/command", 10,
         [this](std_msgs::msg::String::SharedPtr m) { on_command(right_, m->data); });
@@ -469,34 +481,35 @@ private:
   // Sensor callback: pick out slot 7 from the MotorStateArray and update the
   // gripper's raw_pos / velocity / torque + multi-turn unwrap.
   // --------------------------------------------------------------------------
-  void on_state(Gripper & g, const usb2can::msg::MotorStateArray & msg)
+  void on_state(Gripper & g, const w3_robot_bridge::msg::MotorStateArray & msg)
   {
     if (!g.enabled) {
       return;
     }
-    // MotorStateArray is fixed-size 8 (channel slots 0..7); we trust the
-    // slot index directly. The MotorState.id field is unreliable for an
-    // empty / disabled slot because it is decoded from CAN payload bytes
-    // which are arbitrary garbage when no motor is responding (and the
-    // bridge only falls back to slot when id==0). Enforcing ms.id==slot
-    // would silently drop every state frame for a not-yet-enabled motor.
-    if (msg.motors.size() <= g.slot) {
+    const w3_robot_bridge::msg::MotorState * ms = nullptr;
+    for (const auto & motor : msg.motors) {
+      if (motor.channel == g.channel && motor.motor_index == g.slot) {
+        ms = &motor;
+        break;
+      }
+    }
+    if (!ms) {
       return;
     }
-    const auto & ms = msg.motors[g.slot];
 
     std::lock_guard<std::mutex> lock(mu_);
 
-    // Count arm slots 0..6 that report err == DM_ERR_ENABLED (=1) on the
+    // Count arm slots 0..6 that report enabled=true on the
     // SAME CAN channel as this gripper. This is a free side-effect of every
     // state msg and gives us a clean "arm is up" signal without subscribing
     // to /joint_states (which would couple us to the controller_manager
     // node lifecycle).
-    static constexpr uint8_t DM_ERR_ENABLED = 1;
     int armed = 0;
-    const size_t n = msg.motors.size();
-    for (size_t i = 0; i < 7 && i < n; ++i) {
-      if (msg.motors[i].err == DM_ERR_ENABLED) ++armed;
+    for (const auto & motor : msg.motors) {
+      if (motor.channel == g.channel && motor.motor_index < 7 &&
+          motor.online && motor.enabled) {
+        ++armed;
+      }
     }
     g.arm_armed_count = armed;
     if (armed == 7) {
@@ -511,7 +524,11 @@ private:
       g.arm_was_ever_ready = false;
     }
 
-    const double now_pos = static_cast<double>(ms.position);
+    if (!ms->online || !std::isfinite(ms->position) ||
+        !std::isfinite(ms->velocity) || !std::isfinite(ms->torque)) {
+      return;
+    }
+    const double now_pos = static_cast<double>(ms->position);
     if (!g.has_state) {
       g.raw_pos_prev = now_pos;
       g.q_motor = now_pos;  // arbitrary origin; calibration writes the real one
@@ -520,19 +537,19 @@ private:
       g.has_state = true;
       RCLCPP_INFO(get_logger(),
         "%s gripper: first state frame received (raw_pos=%.3f, err=%u, |tau|=%.2fNm)",
-        g.side.c_str(), now_pos, static_cast<unsigned>(ms.err),
-        std::abs(static_cast<double>(ms.torque)));
+        g.side.c_str(), now_pos, static_cast<unsigned>(ms->error_flags),
+        std::abs(static_cast<double>(ms->torque)));
     } else {
       g.q_motor += unwrap_delta(now_pos, g.raw_pos_prev, g.pos_max);
     }
     g.raw_pos = now_pos;
     g.raw_pos_prev = now_pos;
-    g.velocity = static_cast<double>(ms.velocity);
+    g.velocity = static_cast<double>(ms->velocity);
     g.velocity_filtered =
       (1.0 - g.velocity_filter_alpha) * g.velocity +
       g.velocity_filter_alpha * g.velocity_filtered;
-    g.torque   = static_cast<double>(ms.torque);
-    g.err      = ms.err;
+    g.torque   = static_cast<double>(ms->torque);
+    g.err      = ms->error_flags;
     g.last_state_stamp = msg.header.stamp;
   }
 
@@ -733,15 +750,15 @@ private:
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (left_.enabled) {
-      step(left_,  left_cmd_pub_);
+      step(left_,  cmd_pub_);
     }
     if (right_.enabled) {
-      step(right_, right_cmd_pub_);
+      step(right_, cmd_pub_);
     }
   }
 
   void step(Gripper & g,
-            const rclcpp::Publisher<usb2can::msg::MotorCommandArray>::SharedPtr & pub)
+            const rclcpp::Publisher<w3_robot_bridge::msg::MotorCommandArray>::SharedPtr & pub)
   {
     if (shutdown_in_progress_.load()) {
       // Shutdown sequence is running -- it owns the FD path. Stop publishing
@@ -749,18 +766,13 @@ private:
       // thrashed while the arm hw_interface waits for its own DISABLE.
       return;
     }
-    if (!g.has_state) {
-      return;  // no feedback yet; don't send commands blindly
+    if (!g.has_state && g.state != GState::INIT && g.state != GState::ENABLING) {
+      return;
     }
     if (g.state == GState::INIT) {
-      // Gate the very first ENABLING on "arm is fully up". Reason: while the
-      // arm hw_interface is bursting FC + zero-cmd at 50 Hz, every gripper
-      // publish wipes ch_buf_[ch] of arm slot data and emits a DcuCommand
-      // with mask=0x80 (only slot 7). The arm CAN traffic gets diluted just
-      // enough to make some arm motors miss the DM enable transition window
-      // (intermittent left_joint_3/right_joint_5 not enabling). We therefore
-      // hold off ALL gripper publishing until the arm reports all 7 of its
-      // joints ENABLED on this channel.
+      // Keep the original arm-before-gripper startup ordering. W3 only
+      // reports online feedback after the disabled gripper receives traffic,
+      // so INIT/ENABLING must be allowed to send zero-impedance commands first.
       if (g.arm_armed_count != 7) {
         // Don't even publish a state-tracking heartbeat; the gripper motor
         // is still disabled, no watchdog to satisfy yet.
@@ -792,17 +804,16 @@ private:
       case GState::ENABLING: {
         // Mirror dm_hardware_interface's enable strategy: hammer FC at 50 Hz
         // (configurable) AND publish a zero-impedance MotorCommand every tick
-        // (kp=kd=0, vel=0, tau=0) so the STM32 watchdog stays quiet, then
+        // (kp=kd=0, vel=0, tau=0) to refresh the W3 command heartbeat, then
         // wait for the motor to report err == DM_ERR_ENABLED for several
         // consecutive frames before advancing.
         static constexpr uint8_t DM_ERR_ENABLED = 1;
-        const auto epub = (g.channel == 1) ? left_enable_pub_ : right_enable_pub_;
         if (g.phase_ticks == 1 ||
             (g.phase_ticks % g.enable_pub_period_ticks) == 0)
         {
-          publish_motor_enable(g, epub, /*enable=*/true);
+          publish_motor_enable(g, /*enable=*/true);
         }
-        if (g.err == DM_ERR_ENABLED) {
+        if (g.has_state && g.err == DM_ERR_ENABLED) {
           if (++g.enable_confirm_count >= g.enable_confirm_frames) {
             RCLCPP_INFO(get_logger(),
               "%s gripper: motor reports err=1 (ENABLED) for %d frames; "
@@ -1023,23 +1034,27 @@ private:
   }
 
   // --------------------------------------------------------------------------
-  // Publish per-motor FC (enable=true) or FD (enable=false) to bridge so the
-  // DM motor enters / leaves MIT mode. The bridge translates exactly one
-  // CAN frame per MotorEnableArray we publish; CAN is lossy so the ENABLING
-  // state machine calls this a few times spaced out by enable_pub_interval.
+  // Publish per-motor ENABLE / DISABLE to the W3 bridge so the DM motor
+  // enters / leaves MIT mode. CAN is lossy so the ENABLING state machine
+  // calls this a few times spaced out by enable_pub_interval.
   // --------------------------------------------------------------------------
   void publish_motor_enable(
     const Gripper & g,
-    const rclcpp::Publisher<usb2can::msg::MotorEnableArray>::SharedPtr & pub,
     bool enable)
   {
-    usb2can::msg::MotorEnableArray msg;
+    if (!cmd_pub_) {
+      return;
+    }
+    w3_robot_bridge::msg::MotorCommandArray msg;
     msg.header.stamp = now();
-    msg.channel = g.channel;
-    msg.motors.resize(1);
-    msg.motors[0].id = g.slot;
-    msg.motors[0].enable = enable;
-    pub->publish(msg);
+    msg.commands.resize(1);
+    auto & m = msg.commands[0];
+    m.channel = g.channel;
+    m.motor_index = g.slot;
+    m.mode = enable ?
+      w3_robot_bridge::msg::MotorCommand::MODE_ENABLE :
+      w3_robot_bridge::msg::MotorCommand::MODE_DISABLE;
+    cmd_pub_->publish(msg);
   }
 
   // --------------------------------------------------------------------------
@@ -1078,15 +1093,19 @@ private:
   // Publish MotorCommandArray containing exactly the one slot-7 command.
   // --------------------------------------------------------------------------
   void publish_cmd(const Gripper & g,
-                   const rclcpp::Publisher<usb2can::msg::MotorCommandArray>::SharedPtr & pub,
+                   const rclcpp::Publisher<w3_robot_bridge::msg::MotorCommandArray>::SharedPtr & pub,
                    double pos, double vel, double kp, double kd, double tau)
   {
-    usb2can::msg::MotorCommandArray msg;
+    if (!pub) {
+      return;
+    }
+    w3_robot_bridge::msg::MotorCommandArray msg;
     msg.header.stamp = now();
-    msg.channel = g.channel;
-    msg.motors.resize(1);
-    auto & m = msg.motors[0];
-    m.id        = g.slot;
+    msg.commands.resize(1);
+    auto & m = msg.commands[0];
+    m.channel = g.channel;
+    m.motor_index = g.slot;
+    m.mode = w3_robot_bridge::msg::MotorCommand::MODE_RUN;
     m.position  = static_cast<float>(std::clamp(pos, -g.pos_max * 10.0, g.pos_max * 10.0));
     // Note: dm_motor_bridge will clamp position into [-pos_max, +pos_max] for
     // the MIT packet anyway; we send the raw multi-turn target which the
@@ -1095,7 +1114,7 @@ private:
     m.velocity  = static_cast<float>(std::clamp(vel, -g.vel_max, g.vel_max));
     m.kp        = static_cast<float>(std::max(0.0, kp));
     m.kd        = static_cast<float>(std::max(0.0, kd));
-    m.torque_ff = static_cast<float>(std::clamp(tau, -g.tor_max, g.tor_max));
+    m.torque    = static_cast<float>(std::clamp(tau, -g.tor_max, g.tor_max));
     pub->publish(msg);
   }
 
@@ -1131,16 +1150,12 @@ private:
   double dt_ = 1.0 / 500.0;
   std::mutex mu_;
 
-  rclcpp::Subscription<usb2can::msg::MotorStateArray>::SharedPtr left_state_sub_;
-  rclcpp::Subscription<usb2can::msg::MotorStateArray>::SharedPtr right_state_sub_;
+  rclcpp::Subscription<w3_robot_bridge::msg::MotorStateArray>::SharedPtr state_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr left_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr right_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr left_teleop_target_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr right_teleop_target_sub_;
-  rclcpp::Publisher<usb2can::msg::MotorCommandArray>::SharedPtr left_cmd_pub_;
-  rclcpp::Publisher<usb2can::msg::MotorCommandArray>::SharedPtr right_cmd_pub_;
-  rclcpp::Publisher<usb2can::msg::MotorEnableArray>::SharedPtr left_enable_pub_;
-  rclcpp::Publisher<usb2can::msg::MotorEnableArray>::SharedPtr right_enable_pub_;
+  rclcpp::Publisher<w3_robot_bridge::msg::MotorCommandArray>::SharedPtr cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr left_status_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr right_status_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr left_teleop_state_pub_;
@@ -1152,17 +1167,17 @@ public:
   // Send FD (disable) to both grippers; one shot.
   void disable_motors()
   {
-    if (left_.enabled && left_enable_pub_) {
-      publish_motor_enable(left_, left_enable_pub_, false);
+    if (left_.enabled && cmd_pub_) {
+      publish_motor_enable(left_, false);
     }
-    if (right_.enabled && right_enable_pub_) {
-      publish_motor_enable(right_, right_enable_pub_, false);
+    if (right_.enabled && cmd_pub_) {
+      publish_motor_enable(right_, false);
     }
   }
 
   // Synchronous shutdown disable. User-requested ordering:
   //   1) WAIT for the arm hw_interface to finish its own DISABLE -- detected
-  //      via /motor/chN/state (slots 0..6 err -> 0). During this wait we
+  //      via W3 state (slots 0..6 enabled -> false). During this wait we
   //      STOP publishing any gripper MotorCommand so the bridge's ch_buf_
   //      isn't being thrashed between arm & gripper writers (same conflict
   //      that caused arm enable to flake during startup). The gripper motor
@@ -1192,7 +1207,7 @@ public:
 
     RCLCPP_INFO(get_logger(),
       "Shutdown phase 1: paused gripper cmd publishing; waiting for arm "
-      "DISABLE on ch1 & ch2 (timeout %.1fs)...", arm_wait_timeout_s);
+      "DISABLE on can0 & can1 (timeout %.1fs)...", arm_wait_timeout_s);
 
     const auto t0 = steady_clock::now();
     while (rclcpp::ok()) {
@@ -1220,7 +1235,7 @@ public:
 
     // ---------- Phase 2: gripper FD until err==0 ----------
     RCLCPP_INFO(get_logger(),
-      "Shutdown phase 2: 5Hz FD on /motor/ch{1,2}/motor_enable until both "
+      "Shutdown phase 2: 5Hz DISABLE on W3 bridge until both "
       "gripper motors report err=0 (timeout %.1fs)...", gripper_fd_timeout_s);
 
     const auto t1 = steady_clock::now();

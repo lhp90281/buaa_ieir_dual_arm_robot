@@ -1,0 +1,31 @@
+# Raw motor coordinates; calibration is applied by DMHardwareInterface once.
+# Slot 7 / CAN ID 8 is added only with gripper:=true in the launch file.
+channels:
+  - iface: can0
+    motor_count: 7
+    baudrate: 1000000
+    data_baudrate: 5000000
+    control_rate_hz: 350.0
+    feedback_timeout_s: 0.05
+    motor_configs:
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id1.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id2.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id3.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id4.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id5.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id6.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/left_arm/can0_id7.yaml"
+  - iface: can1
+    motor_count: 7
+    baudrate: 1000000
+    data_baudrate: 5000000
+    control_rate_hz: 350.0
+    feedback_timeout_s: 0.05
+    motor_configs:
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id1.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id2.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id3.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id4.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id5.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id6.yaml"
+      - "$(find-pkg-share w3_robot_bridge)/config/motor_config/right_arm/can1_id7.yaml"

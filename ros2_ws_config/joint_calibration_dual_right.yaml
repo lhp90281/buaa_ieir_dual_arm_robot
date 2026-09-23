@@ -1,0 +1,65 @@
+# =============================================================================
+#  双大臂 — 右臂 (W3 channel 1 / can1) 关节零点标定输入  [hard-stop 模式]
+# =============================================================================
+# 见 joint_calibration_dual_left.yaml 的完整说明.
+#
+# 用法:
+#   ros2 run eiriarm_controllers joint_zero_calibration \
+#       --mode hard-stop \
+#       --calibration-yaml joint_calibration_dual_right.yaml \
+#       --output joint_offsets_right.yaml
+#
+# 注意左右臂 axis 是镜像的, URDF lower/upper 范围不同.
+# 默认 limit_side=negative 对应的 "URDF 较小角度那侧" 在右臂上与左臂反转.
+# 工作中请按你机械实际"撞得最决的那侧"选 limit_side.
+# =============================================================================
+
+channel: 1
+
+sampling:
+  window_sec: 0.5
+  min_samples: 20
+  max_motion_rad: 0.05
+
+joints:
+  - slot: 0
+    name: right_joint_0
+    motor_type: DM8009
+    limit_side: positive
+    urdf_pos_at_limit: 3.1416    # URDF lower; 检查 CAD
+
+  - slot: 1
+    name: right_joint_1
+    motor_type: DM8009
+    limit_side: negative
+    urdf_pos_at_limit: -0.4363    # URDF lower; 检查 CAD
+
+  - slot: 2
+    name: right_joint_2
+    motor_type: DM4340P
+    limit_side: negative
+    urdf_pos_at_limit: -2.6180    # URDF lower; 检查 CAD
+
+  - slot: 3
+    name: right_joint_3
+    motor_type: DM4340
+    limit_side: positive
+    urdf_pos_at_limit: 1.5707963267948966  # 已人工确认 +90 度限位
+
+  - slot: 4
+    name: right_joint_4
+    motor_type: DM4310
+    limit_side: negative
+    urdf_pos_at_limit: -2.6180    # URDF lower; 检查 CAD
+
+  - slot: 5
+    name: right_joint_5
+    motor_type: DM4310
+    limit_side: negative
+    urdf_pos_at_limit: -0.8098    # URDF lower; 检查 CAD
+
+  - slot: 6
+    name: right_joint_6
+    motor_type: DM4310
+    limit_side: negative
+    urdf_pos_at_limit: -1.5708    # URDF lower; 检查 CAD

@@ -1,0 +1,52 @@
+DM8009:
+  identified_at: '2026-05-21T14:13:01'
+  identified_on_slot: ch1.id0
+  viscous: 0.006677568131460143
+  coulomb_pos: 0.47615128002450663
+  coulomb_neg: 0.5022121183888698
+  static_pos: 0.9450000000000006
+  static_neg: 0.6750000000000004
+DM4340P:
+  viscous: 0.06603756049762699
+  coulomb_pos: 0.5721039964971653
+  coulomb_neg: 0.5752264592810512
+  static_pos: 0.7000000000000005
+  static_neg: 0.7280000000000005
+  identified_at: '2026-05-21T14:28:03'
+  identified_on_slot: ch1.id1
+  notes: Static from Run 3 (Run 4 mechanically blocked, NaN). Coulomb/viscous also
+    from Run 3 (thermally stable, symmetric).
+DM4340:
+  viscous: 0.0508
+  coulomb_pos: 0.5
+  coulomb_neg: 0.474
+  static_pos: 0.619
+  static_neg: 0.512
+  identified_at: '2026-05-21T14:46:00'
+  identified_on_slot: ch1.id2
+  notes: Averaged across 5 runs. Viscous from last 2 (thermally stable). Coulomb from
+    Run 2-5 (Run 1 cold-start excluded). Static from all 5 (high variance, inherent
+    to ramp method on direct-drive motor with cogging).
+  raw_last_run:
+    viscous: 0.048369490809698656
+    coulomb_pos: 0.5056503253695442
+    coulomb_neg: 0.486488185141731
+    static_pos: 0.588
+    static_neg: 0.546
+DM4310:
+  viscous: 0.00346             # mean of Run 3-4 (thermally settled)
+  coulomb_pos: 0.0934           # mean of Run 1-4 (very stable)
+  coulomb_neg: 0.0990           # mean of Run 1-4 (very stable)
+  static_pos: 0.165             # mean of Run 1/3/4 (Run 2 NaN, mechanically blocked)
+  static_neg: 0.123             # mean of Run 1/3/4
+  identified_at: '2026-05-21T14:56:08'
+  identified_on_slot: ch1.id3
+  notes: 'Averaged across 4 runs. Run 2 static NaN (ramped to 5 N*m without breakaway,
+    likely mechanical jam after high-speed coulomb sweep). Coulomb extremely stable
+    (sigma/mean < 2%), neg > pos by 5% (cogging-driven asymmetry).'
+  raw_last_run:
+    viscous: 0.003376345675923098
+    coulomb_pos: 0.09170876132215694
+    coulomb_neg: 0.09689795594234107
+    static_pos: 0.16
+    static_neg: 0.125

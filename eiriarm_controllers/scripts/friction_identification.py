@@ -6,19 +6,17 @@ Identifies Coulomb + viscous + static friction for a single DM motor
 
 Algorithm port of qt5_damiao_motor_friction_detection (Chen XingYu),
 with: GUI/QThread/DM_CAN.py removed; data acquisition via USB2CAN
-/motor/chN/state; joint identification of (Coulomb, viscous) via
+/w3_robot_bridge_node/state; joint identification of (Coulomb, viscous) via
 numpy.linalg.lstsq instead of asking the user to pre-fill viscous_coeff.
 
 Usage example:
 
     # terminal A: bring up the bus
-    ros2 launch usb2can usb2can_with_dm.launch.py \\
-        device:=/dev/ttyACM0 \\
-        motors_config:=$(ros2 pkg prefix usb2can)/share/usb2can/config/dm_motors_eiriarm.yaml
+    ros2 launch eiriarm_bringup bridge.launch.py
 
     # terminal B: run identification on one motor
     ros2 run eiriarm_controllers friction_identification \\
-        --motor-type DM8009 --channel 1 --slot 0 \\
+        --motor-type DM8009 --channel 0 --slot 0 \\
         --tests baseline,coulomb,static
 
 Outputs:
@@ -26,6 +24,7 @@ Outputs:
     friction_results/<motor_type>_<test>_<timestamp>.png
 """
 import argparse
+import math
 import dataclasses
 import datetime as _dt
 import sys
@@ -47,11 +46,9 @@ from rclpy.executors import MultiThreadedExecutor  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.qos import qos_profile_sensor_data  # noqa: E402
 
-from usb2can.msg import (  # noqa: E402
+from w3_robot_bridge.msg import (  # noqa: E402
     MotorCommand,
     MotorCommandArray,
-    MotorEnable,
-    MotorEnableArray,
     MotorStateArray,
 )
 
@@ -64,11 +61,8 @@ MOTOR_LIMITS: Dict[str, Tuple[float, float]] = {
     'DM8009':  (45.0, 54.0),
 }
 
-# A "no-data" feedback slot from STM32 (all-zero 64B payload decoded by
-# dm_motor_bridge) shows up as exactly (-pos_max, -vel_max, -tor_max).
-NO_DATA_EPSILON = 1e-3
 
-# DM motor state code (MotorState.err = RX byte0 high 4 bits).
+# DM motor state code (MotorState.error_flags = RX byte0 high 4 bits).
 DM_ERR_ENABLED = 1
 DM_ERR_NAMES = {
     0: 'disabled', 1: 'enabled',
@@ -99,8 +93,8 @@ class FrictionIdentifierNode(Node):
     def __init__(self, channel: int, slot: int, motor_type: str,
                  pos_max: float, vel_max: float, tor_max: float):
         super().__init__('friction_identification')
-        if channel not in (1, 2, 3):
-            raise ValueError(f'channel must be 1/2/3, got {channel}')
+        if channel not in (0, 1):
+            raise ValueError(f'channel must be 0/1, got {channel}')
         if not 0 <= slot <= 7:
             raise ValueError(f'slot must be 0..7, got {slot}')
         self.channel = channel
@@ -111,11 +105,9 @@ class FrictionIdentifierNode(Node):
         self.tor_max = tor_max
 
         self._cmd_pub = self.create_publisher(
-            MotorCommandArray, f'/motor/ch{channel}/cmd', 10)
-        self._enable_pub = self.create_publisher(
-            MotorEnableArray, f'/motor/ch{channel}/motor_enable', 10)
+            MotorCommandArray, '/w3_robot_bridge_node/commands', 10)
         self._state_sub = self.create_subscription(
-            MotorStateArray, f'/motor/ch{channel}/state',
+            MotorStateArray, '/w3_robot_bridge_node/state',
             self._on_state, qos_profile_sensor_data)
 
         self._cmd = MotorCmd()
@@ -124,7 +116,7 @@ class FrictionIdentifierNode(Node):
 
         self._state_lock = threading.Lock()
         self._latest: Optional[Tuple[float, float, float, float]] = None
-        # Latest MotorState.err for this motor (None if no real frame yet).
+        # Latest MotorState.error_flags for this motor (None if no real frame yet).
         self._latest_err: Optional[int] = None
 
         self.get_logger().info(
@@ -132,33 +124,32 @@ class FrictionIdentifierNode(Node):
             f'limits pos+-{pos_max} vel+-{vel_max} tor+-{tor_max}')
 
     def _on_state(self, msg: MotorStateArray) -> None:
-        if msg.channel != self.channel or self.slot >= len(msg.motors):
-            return
-        m = msg.motors[self.slot]
-        if (abs(m.position + self.pos_max) < NO_DATA_EPSILON and
-                abs(m.velocity + self.vel_max) < NO_DATA_EPSILON and
-                abs(m.torque + self.tor_max) < NO_DATA_EPSILON):
+        m = next((m for m in msg.motors
+                  if m.channel == self.channel and m.motor_index == self.slot
+                  and m.online), None)
+        if m is None or not all(math.isfinite(v) for v in (m.position, m.velocity, m.torque)):
             return
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         with self._state_lock:
             self._latest = (t, float(m.position),
                             float(m.velocity), float(m.torque))
-            self._latest_err = int(m.err)
+            self._latest_err = int(m.error_flags)
 
     def _publish_cmd(self) -> None:
         with self._cmd_lock:
             c = dataclasses.replace(self._cmd)
         arr = MotorCommandArray()
         arr.header.stamp = self.get_clock().now().to_msg()
-        arr.channel = self.channel
         mc = MotorCommand()
-        mc.id = self.slot
+        mc.channel = self.channel
+        mc.mode = MotorCommand.MODE_RUN
+        mc.motor_index = self.slot
         mc.position = float(c.position)
         mc.velocity = float(c.velocity)
         mc.kp = float(c.kp)
         mc.kd = float(c.kd)
-        mc.torque_ff = float(c.torque_ff)
-        arr.motors = [mc]
+        mc.torque = float(c.torque_ff)
+        arr.commands = [mc]
         self._cmd_pub.publish(arr)
 
     def set_cmd(self, kp: float = 0.0, kd: float = 0.0,
@@ -183,21 +174,21 @@ class FrictionIdentifierNode(Node):
         return None
 
     def _publish_enable_msg(self, enable: bool) -> None:
-        msg = MotorEnableArray()
+        msg = MotorCommandArray()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.channel = self.channel
-        m = MotorEnable()
-        m.id = self.slot
-        m.enable = enable
-        msg.motors = [m]
-        self._enable_pub.publish(msg)
+        mode = MotorCommand.MODE_ENABLE if enable else MotorCommand.MODE_DISABLE
+        msg.commands = [
+            MotorCommand(channel=self.channel, motor_index=slot, mode=mode)
+            for slot in [self.slot]
+        ]
+        self._cmd_pub.publish(msg)
 
     def _get_latest_err(self) -> Optional[int]:
         with self._state_lock:
             return self._latest_err
 
     def enable(self, timeout: float = 5.0) -> bool:
-        """Publish ENABLE at 5 Hz until MotorState.err == DM_ERR_ENABLED,
+        """Publish ENABLE at 5 Hz until MotorState.error_flags == DM_ERR_ENABLED,
         or the timeout expires. Returns True iff confirmed."""
         deadline = time.monotonic() + timeout
         last_pub = 0.0
@@ -221,7 +212,7 @@ class FrictionIdentifierNode(Node):
         return False
 
     def disable(self, timeout: float = 3.0) -> bool:
-        """Publish DISABLE at 5 Hz until MotorState.err != DM_ERR_ENABLED
+        """Publish DISABLE at 5 Hz until MotorState.error_flags != DM_ERR_ENABLED
         (disabled or in an error state), or the timeout expires."""
         # Zero the cmd so the motor is passive when DISABLE lands. Keep the
         # cmd heartbeat running -- the motor is request-response, so without
@@ -259,7 +250,7 @@ def parse_args(argv=None):
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--motor-type', required=True,
                    choices=sorted(MOTOR_LIMITS.keys()))
-    p.add_argument('--channel', type=int, default=1, choices=(1, 2, 3))
+    p.add_argument('--channel', type=int, default=0, choices=(0, 1))
     p.add_argument('--slot', type=int, default=0)
     p.add_argument('--tests', default='baseline,coulomb,static',
                    help='comma-separated subset of {baseline,coulomb,static}')
@@ -307,11 +298,11 @@ def main(argv=None) -> int:
     results_all: Dict[str, float] = {}
     exit_code = 0
     try:
-        node.get_logger().info('Waiting for first /motor/chN/state frame...')
+        node.get_logger().info('Waiting for first /w3_robot_bridge_node/state frame...')
         if node.get_state(timeout=5.0) is None:
             raise RuntimeError(
-                'No /motor/chN/state received within 5 s. '
-                'Is usb2can_with_dm launch running?')
+                'No /w3_robot_bridge_node/state received within 5 s. '
+                'Is bridge.launch.py launch running?')
         node.get_logger().info('State stream OK, starting tests.')
 
         if 'baseline' in tests:
@@ -405,7 +396,7 @@ def baseline_check(node: FrictionIdentifierNode, duration: float = 15.0,
     if len(torques) < 100:
         raise RuntimeError(
             f'baseline: too few samples ({len(torques)}). '
-            'Check /motor/chN/state is publishing.')
+            'Check /w3_robot_bridge_node/state is publishing.')
 
     arr = np.asarray(torques)
     vel_arr = np.asarray(velocities)

@@ -14,17 +14,15 @@ provide ~static torque to start motion.
 Usage:
 
     # bring the bus up first (terminal A):
-    ros2 launch usb2can usb2can_with_dm.launch.py \\
-        device:=/dev/ttyACM0 \\
-        motors_config:=$(ros2 pkg prefix usb2can)/share/usb2can/config/dm_motors_eiriarm.yaml
+    ros2 launch eiriarm_bringup bridge.launch.py
 
     # single-motor mode (terminal B):
     ros2 run eiriarm_controllers friction_compensation_demo \\
-        --motor-type DM4310 --channel 1 --slot 6 --gain 0.5
+        --motor-type DM4310 --channel 0 --slot 6 --gain 0.5
 
     # multi-motor mode -- compensate one full 7-DoF arm at once:
     ros2 run eiriarm_controllers friction_compensation_demo \\
-        --channel 1 \\
+        --channel 0 \\
         --motors 0:DM8009,1:DM8009,2:DM4340P,3:DM4340,4:DM4310,5:DM4310,6:DM4310 \\
         --gain 0.5
 
@@ -55,11 +53,9 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from usb2can.msg import (
+from w3_robot_bridge.msg import (
     MotorCommand,
     MotorCommandArray,
-    MotorEnable,
-    MotorEnableArray,
     MotorStateArray,
 )
 
@@ -74,7 +70,7 @@ MOTOR_LIMITS: Dict[str, Tuple[float, float, float]] = {
 
 NO_DATA_EPSILON = 1e-3
 
-# DM motor state code (MotorState.err = RX byte0 high 4 bits).
+# DM motor state code (MotorState.error_flags = RX byte0 high 4 bits).
 DM_ERR_ENABLED = 1
 DM_ERR_NAMES = {
     0: 'disabled', 1: 'enabled',
@@ -146,17 +142,15 @@ class FrictionCompensationNode(Node):
         self.deadband = deadband
 
         self._cmd_pub = self.create_publisher(
-            MotorCommandArray, f'/motor/ch{channel}/cmd', 10)
-        self._enable_pub = self.create_publisher(
-            MotorEnableArray, f'/motor/ch{channel}/motor_enable', 10)
+            MotorCommandArray, '/w3_robot_bridge_node/commands', 10)
         self._state_sub = self.create_subscription(
-            MotorStateArray, f'/motor/ch{channel}/state',
+            MotorStateArray, '/w3_robot_bridge_node/state',
             self._on_state, qos_profile_sensor_data)
 
         self._state_lock = threading.Lock()
         # slot -> (pos, vel, tor)
         self._states: Dict[int, Tuple[float, float, float]] = {}
-        # slot -> latest MotorState.err (only updated for non-sentinel frames)
+        # slot -> latest MotorState.error_flags (only updated for non-sentinel frames)
         self._state_err: Dict[int, Optional[int]] = {m.slot: None for m in motors}
         # slot -> tau_ff last commanded
         self._tau_ffs: Dict[int, float] = {m.slot: 0.0 for m in motors}
@@ -178,22 +172,19 @@ class FrictionCompensationNode(Node):
     # --------------- ROS callbacks ---------------
 
     def _on_state(self, msg: MotorStateArray) -> None:
-        if msg.channel != self.channel:
-            return
+        motors = {m.motor_index: m for m in msg.motors
+                  if m.channel == self.channel and m.online
+                  and all(math.isfinite(v) for v in (m.position, m.velocity, m.torque))}
         new_states: Dict[int, Tuple[float, float, float]] = {}
         new_errs: Dict[int, int] = {}
         for entry in self.motors:
-            if entry.slot >= len(msg.motors):
+            if entry.slot not in motors:
                 continue
-            m = msg.motors[entry.slot]
-            if (abs(m.position + entry.pos_max) < NO_DATA_EPSILON and
-                    abs(m.velocity + entry.vel_max) < NO_DATA_EPSILON and
-                    abs(m.torque + entry.tor_max) < NO_DATA_EPSILON):
-                continue
+            m = motors[entry.slot]
             new_states[entry.slot] = (float(m.position),
                                       float(m.velocity),
                                       float(m.torque))
-            new_errs[entry.slot] = int(m.err)
+            new_errs[entry.slot] = int(m.error_flags)
         if not new_states:
             return
         with self._state_lock:
@@ -228,18 +219,19 @@ class FrictionCompensationNode(Node):
             tau_ff = 0.0 if s is None else self._compute_ff(entry, s[1])
             self._tau_ffs[entry.slot] = tau_ff
             mc = MotorCommand()
-            mc.id = entry.slot
+            mc.channel = self.channel
+            mc.mode = MotorCommand.MODE_RUN
+            mc.motor_index = entry.slot
             mc.position = 0.0
             mc.velocity = 0.0
             mc.kp = 0.0
             mc.kd = 0.0
-            mc.torque_ff = float(tau_ff)
+            mc.torque = float(tau_ff)
             cmds.append(mc)
 
         arr = MotorCommandArray()
         arr.header.stamp = self.get_clock().now().to_msg()
-        arr.channel = self.channel
-        arr.motors = cmds
+        arr.commands = cmds
         self._cmd_pub.publish(arr)
 
     def _tick_log(self) -> None:
@@ -247,7 +239,7 @@ class FrictionCompensationNode(Node):
             states = dict(self._states)
         if not states:
             self.get_logger().warn('No state stream yet on '
-                                   f'/motor/ch{self.channel}/state')
+                                   '/w3_robot_bridge_node/state')
             return
         for entry in self.motors:
             s = states.get(entry.slot)
@@ -265,13 +257,14 @@ class FrictionCompensationNode(Node):
     # --------------- enable / disable ---------------
 
     def _publish_enable_msg(self, enable: bool) -> None:
-        msg = MotorEnableArray()
+        msg = MotorCommandArray()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.channel = self.channel
-        msg.motors = [
-            MotorEnable(id=e.slot, enable=enable) for e in self.motors
+        mode = MotorCommand.MODE_ENABLE if enable else MotorCommand.MODE_DISABLE
+        msg.commands = [
+            MotorCommand(channel=self.channel, motor_index=slot, mode=mode)
+            for slot in [entry.slot for entry in self.motors]
         ]
-        self._enable_pub.publish(msg)
+        self._cmd_pub.publish(msg)
 
     def _snapshot_err(self) -> Dict[int, Optional[int]]:
         with self._state_lock:
@@ -284,7 +277,7 @@ class FrictionCompensationNode(Node):
     def enable(self, timeout: float = 5.0,
                stop_evt: Optional[threading.Event] = None) -> bool:
         """Publish ENABLE at 5 Hz until every tracked motor reports
-        MotorState.err == DM_ERR_ENABLED, or the timeout expires.
+        MotorState.error_flags == DM_ERR_ENABLED, or the timeout expires.
         Returns True iff confirmed."""
         deadline = time.monotonic() + timeout
         last_pub = 0.0
@@ -317,17 +310,16 @@ class FrictionCompensationNode(Node):
     def disable(self, timeout: float = 3.0,
                 stop_evt: Optional[threading.Event] = None) -> bool:
         """Publish DISABLE at 5 Hz until every tracked motor reports
-        MotorState.err != DM_ERR_ENABLED (disabled or error), or the
+        MotorState.error_flags != DM_ERR_ENABLED (disabled or error), or the
         timeout expires."""
         # Burst zero-cmd so motors are passive when DISABLE lands. Keep
         # the 10 ms cmd ticker running so the motors keep responding and
         # we can read fresh err codes (DM is request-response).
         arr = MotorCommandArray()
         arr.header.stamp = self.get_clock().now().to_msg()
-        arr.channel = self.channel
-        arr.motors = [
-            MotorCommand(id=e.slot, position=0.0, velocity=0.0,
-                         kp=0.0, kd=0.0, torque_ff=0.0)
+        arr.commands = [
+            MotorCommand(channel=self.channel, motor_index=e.slot, mode=MotorCommand.MODE_RUN, position=0.0, velocity=0.0,
+                         kp=0.0, kd=0.0, torque=0.0)
             for e in self.motors
         ]
         for _ in range(3):
@@ -396,7 +388,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description='DM motor friction-compensation demo (single or multi).',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument('--channel', type=int, default=1, choices=(1, 2, 3))
+    p.add_argument('--channel', type=int, default=0, choices=(0, 1))
     # multi-motor mode (preferred for whole arm)
     p.add_argument('--motors', type=_parse_motors_arg, default=None,
                    help='Comma-separated slot:type list, e.g. '

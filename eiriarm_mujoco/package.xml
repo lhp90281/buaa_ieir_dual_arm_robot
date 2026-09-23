@@ -11,13 +11,15 @@
 
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>dual_arm_support</exec_depend>
   
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp_lifecycle</depend>
   
-  <depend>mujoco</depend>
-  <depend>glfw3</depend>
+  <!-- MuJoCo 3.3.0 headers/library are vendored; do not install another ABI. -->
+  <depend>libglfw3-dev</depend>
   <depend>yaml-cpp</depend>
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>

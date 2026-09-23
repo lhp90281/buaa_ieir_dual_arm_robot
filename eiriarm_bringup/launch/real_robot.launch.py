@@ -3,7 +3,7 @@
 Control-side launch for the EiriArm dual 7-DoF robot on REAL hardware.
 
 This launch starts ONLY the ros2_control / controllers / gripper side of
-the stack. The USB-CAN bridge (usb2can_node + dm_motor_bridge) is
+the stack. The W3 SocketCAN bridge is
 intentionally NOT included here; it lives in `bridge.launch.py` and is
 meant to run in its own terminal so its serial-IO chatter does not drown
 out the controller logs.
@@ -22,7 +22,7 @@ this file or run `ros2 control switch_controllers` by hand.
 Common invocations
 ------------------
 
-  # Both arms, gravity-comp / teach mode, gripper on (defaults):
+  # Both arms, gravity-comp / teach mode, without grippers (defaults):
   ros2 launch eiriarm_bringup real_robot.launch.py
 
   # Both arms with joint-space PD tracking active immediately:
@@ -98,13 +98,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'gripper',
-            default_value='true',
-            description='Start the gripper_controller standalone node (auto-calibrates on startup)',
+            default_value='false',
+            description='Grippers installed: include their mass/model and start their controller',
             choices=['true', 'false'],
         ),
         DeclareLaunchArgument(
             'offsets_yaml',
-            default_value='joint_offsets_dual.yaml',
+            default_value='src/ros2_ws_config/joint_offsets_dual.yaml',
             description=(
                 'Path to the 14-joint zero/sign calibration YAML. Relative '
                 'paths are resolved from the launch working directory.'
@@ -112,7 +112,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'friction_model_yaml',
-            default_value='friction_model.yaml',
+            default_value='src/ros2_ws_config/friction_model.yaml',
             description=(
                 'Path to the friction model YAML. Relative paths are '
                 'resolved from the launch working directory.'
@@ -218,7 +218,7 @@ def generate_launch_description():
     ]
 
     # ---- ros2_control + controllers + gripper ----
-    # NOTE: the USB-CAN bridge is intentionally NOT included here. Run it
+    # NOTE: the W3 SocketCAN bridge is intentionally NOT included here. Run it
     # in a separate terminal via `ros2 launch eiriarm_bringup bridge.launch.py`.
     control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -263,6 +263,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'role': LaunchConfiguration('teleop_node_role'),
+            'gripper': LaunchConfiguration('gripper'),
             'mode': LaunchConfiguration('teleop_mode'),
             'peer_host': LaunchConfiguration('teleop_peer_host'),
             'bind_host': LaunchConfiguration('teleop_bind_host'),

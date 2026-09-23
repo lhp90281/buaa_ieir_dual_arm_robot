@@ -1,0 +1,9 @@
+# Enable one or all motors.
+# channel=255  → enable all channels
+# motor_index=255 → enable all motors on the specified channel
+
+uint8 channel
+uint8 motor_index
+---
+bool   success
+string message

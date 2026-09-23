@@ -4,9 +4,9 @@
          type="eiriarm_controllers::DMHardwareInterface"
          base_class_type="hardware_interface::SystemInterface">
     <description>
-      Direct ros2_control SystemInterface for DM motors over usb2can.
-      Subscribes /motor/chN/state, publishes /motor/chN/cmd and
-      /motor/chN/motor_enable. Performs raw to URDF conversion (zero offset,
+      Direct ros2_control SystemInterface for DM motors over the W3 bridge.
+      Subscribes /w3_robot_bridge_node/state and publishes
+      /w3_robot_bridge_node/commands. Performs raw to URDF conversion (zero offset,
       axis sign, single-turn wrap correction) inside the interface so that
       controllers and ros2_control consumers always see joint values in the
       URDF frame.

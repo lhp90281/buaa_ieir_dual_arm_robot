@@ -3,7 +3,7 @@
 set -eo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${1:-} == --help ]]; then
-  echo "Usage: bash scripts/build_workspace.sh WORKSPACE [colcon build options...]"
+  echo "Usage: bash scripts/build_workspace.sh WORKSPACE [--with-simulation] [colcon build options...]"
   echo "Example: bash src/scripts/build_workspace.sh \"\$PWD\"; JOBS=1 by default."
   exit 0
 fi
@@ -13,6 +13,15 @@ if [[ $# -lt 1 || ! -d "$1" ]]; then
 fi
 workspace=$(cd "$1" && pwd)
 shift
+with_simulation=false
+options=()
+for arg in "$@"; do
+  if [[ "$arg" == --with-simulation ]]; then
+    with_simulation=true
+  else
+    options+=("$arg")
+  fi
+done
 if [[ "$workspace" == "$root" ]]; then
   echo "Keep build/install/log outside the source repository." >&2
   exit 2
@@ -29,4 +38,8 @@ source /opt/ros/humble/setup.bash
 export CMAKE_BUILD_PARALLEL_LEVEL=${JOBS:-1}
 export MAKEFLAGS="-j${JOBS:-1}"
 cd "$workspace"
-colcon build --base-paths "$root" --executor sequential "$@"
+roots=("$root/ieir_controllers" "$root/ieir_bringup" "$root/description" "$root/W3_ROBOT")
+if $with_simulation; then
+  roots+=("$root/simulation/ieir_simulation")
+fi
+colcon build --base-paths "${roots[@]}" --executor sequential "${options[@]}"

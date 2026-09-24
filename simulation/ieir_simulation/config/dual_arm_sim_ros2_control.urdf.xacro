@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<!--
+  MuJoCo-facing ros2_control description for the dual 7-DoF ieir.
+
+  The kinematic/inertial tree is the same full robot model used by the real
+  hardware launch. Only the hardware plugin differs: this file binds the same
+  five MIT-mode command interfaces to TopicBasedHardwareInterface, which then
+  publishes simulator topics consumed by ieir_simulation.
+-->
+<robot name="dual_arm_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find dual_arm_support)/urdf/dual_arm_robot_plug.urdf"/>
+
+  <xacro:macro name="sim_dm_joint" params="name effort_max">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort">
+        <param name="min">-${effort_max}</param>
+        <param name="max">${effort_max}</param>
+      </command_interface>
+      <command_interface name="stiffness"/>
+      <command_interface name="damping"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <ros2_control name="dual_arm_sim_system" type="system">
+    <hardware>
+      <plugin>ieir_simulation/TopicBasedHardwareInterface</plugin>
+      <param name="joint_state_topic">/joint_states</param>
+      <param name="command_topic">/ctrl/command</param>
+      <param name="gains_topic">/ctrl/gains</param>
+    </hardware>
+
+    <xacro:sim_dm_joint name="left_joint_0" effort_max="40.0"/>
+    <xacro:sim_dm_joint name="left_joint_1" effort_max="40.0"/>
+    <xacro:sim_dm_joint name="left_joint_2" effort_max="27.0"/>
+    <xacro:sim_dm_joint name="left_joint_3" effort_max="27.0"/>
+    <xacro:sim_dm_joint name="left_joint_4" effort_max="7.0"/>
+    <xacro:sim_dm_joint name="left_joint_5" effort_max="7.0"/>
+    <xacro:sim_dm_joint name="left_joint_6" effort_max="7.0"/>
+
+    <xacro:sim_dm_joint name="right_joint_0" effort_max="40.0"/>
+    <xacro:sim_dm_joint name="right_joint_1" effort_max="40.0"/>
+    <xacro:sim_dm_joint name="right_joint_2" effort_max="27.0"/>
+    <xacro:sim_dm_joint name="right_joint_3" effort_max="27.0"/>
+    <xacro:sim_dm_joint name="right_joint_4" effort_max="7.0"/>
+    <xacro:sim_dm_joint name="right_joint_5" effort_max="7.0"/>
+    <xacro:sim_dm_joint name="right_joint_6" effort_max="7.0"/>
+  </ros2_control>
+
+</robot>

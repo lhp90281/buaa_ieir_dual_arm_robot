@@ -2,10 +2,20 @@
 # System packages only: no pip, motor commands, CAN setup, or ROS nodes.
 set -eo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-mode=${1:---check}
-if [[ $# -gt 1 || ( "$mode" != --check && "$mode" != --install ) ]]; then
-  echo "Usage: bash scripts/install_dependencies.sh [--check|--install]" >&2
-  exit 2
+mode=--check
+with_simulation=false
+for arg in "$@"; do
+  case "$arg" in
+    --check|--install) mode=$arg ;;
+    --with-simulation) with_simulation=true ;;
+    *) echo "Usage: bash scripts/install_dependencies.sh [--check|--install] [--with-simulation]" >&2; exit 2 ;;
+  esac
+done
+roots=("$root/ieir_controllers" "$root/ieir_bringup" "$root/description" "$root/W3_ROBOT")
+graphics=()
+if $with_simulation; then
+  roots+=("$root/simulation/ieir_simulation")
+  graphics=(libglfw3-dev libgl1-mesa-dev)
 fi
 source /etc/os-release
 if [[ "$ID" != ubuntu || "$VERSION_ID" != 22.04 || $(uname -m) != x86_64 ]]; then
@@ -27,24 +37,24 @@ source /opt/ros/humble/setup.bash
 if [[ "$mode" == --install ]]; then
   sudo apt-get update
   sudo apt-get install -y build-essential cmake git python3-colcon-common-extensions \
-    python3-rosdep python3-pytest can-utils iproute2 libglfw3-dev libgl1-mesa-dev \
+    python3-rosdep python3-pytest can-utils iproute2 "${graphics[@]}" \
     ros-humble-pinocchio ros-humble-ros2-control ros-humble-ros2-controllers
   if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
     sudo rosdep init
   fi
   rosdep update --rosdistro humble
   # Explicit roots keep historical USB2CAN out of dependency discovery too.
-  rosdep install --from-paths "$root/eiriarm_controllers" "$root/eiriarm_mujoco" \
-    "$root/eiriarm_bringup" "$root/description" "$root/W3_ROBOT" \
+  rosdep install --from-paths "${roots[@]}" \
     --ignore-src --rosdistro humble -y
 fi
-rosdep check --from-paths "$root/eiriarm_controllers" "$root/eiriarm_mujoco" \
-  "$root/eiriarm_bringup" "$root/description" "$root/W3_ROBOT" \
+rosdep check --from-paths "${roots[@]}" \
   --ignore-src --rosdistro humble
 /usr/bin/python3 -c 'import rclpy, yaml, numpy, pinocchio; print("Python dependencies OK; Pinocchio", pinocchio.__version__)'
-libraries=$(ldd "$root/eiriarm_mujoco/third_party/mujoco/lib/libmujoco.so.3.3.0")
-printf '%s\n' "$libraries"
-if [[ "$libraries" == *"not found"* ]]; then
-  echo "Missing MuJoCo runtime library dependency." >&2
-  exit 1
+if $with_simulation; then
+  libraries=$(ldd "$root/simulation/ieir_simulation/third_party/mujoco/lib/libmujoco.so.3.3.0")
+  printf '%s\n' "$libraries"
+  if [[ "$libraries" == *"not found"* ]]; then
+    echo "Missing MuJoCo runtime library dependency." >&2
+    exit 1
+  fi
 fi

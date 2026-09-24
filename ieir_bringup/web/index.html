@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IEIR · 双臂控制台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.min.js"}}</script>
+  <script src="/vendor/lucide.min.js" defer></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="IEIR 控制台"><i data-lucide="box"></i><span>IEIR<small>W3 / DUAL ARM</small></span></a>
+    <div class="nav-label">工作台</div>
+    <nav aria-label="功能导航">
+      <button class="nav active" data-view="overview" title="运行总览"><i data-lucide="layout-dashboard"></i><span>运行总览</span></button>
+      <button class="nav" data-view="joints" title="关节控制"><i data-lucide="sliders-horizontal"></i><span>关节控制</span></button>
+      <button class="nav" data-view="cartesian" title="末端控制"><i data-lucide="move-3d"></i><span>末端控制</span></button>
+      <button class="nav" data-view="teleop" title="主从遥操作"><i data-lucide="radio-tower"></i><span>主从遥操作</span></button>
+      <button class="nav" data-view="calibration" title="关节标定"><i data-lucide="scan-line"></i><span>关节标定</span></button>
+      <button class="nav" data-view="recording" title="示教记录"><i data-lucide="circle-dot"></i><span>示教记录</span></button>
+      <button class="nav" data-view="config" title="运行配置"><i data-lucide="settings-2"></i><span>运行配置</span></button>
+    </nav>
+    <div class="sidebar-bottom"><i data-lucide="cable"></i><span>SocketCAN FD<small>can0 左臂 · can1 右臂</small></span></div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div class="breadcrumb">控制中心 <span>/</span> <strong id="page-title">运行总览</strong></div>
+      <div class="top-actions"><span id="connection" class="badge">连接中</span><span id="environment" class="badge amber" hidden>离线预览</span>
+        <label class="write-switch"><i data-lucide="lock-keyhole"></i><span>允许控制</span><input id="unlock" type="checkbox" role="switch"></label>
+      </div>
+    </header>
+    <div class="safety-strip"><i data-lucide="shield-alert"></i><span id="safety-text">只读连接 · 未向机器人发送命令</span><span class="safety-note">软件操作不能替代物理急停</span></div>
+    <section class="metrics" aria-label="运行状态">
+      <div><span class="metric-label">关节反馈</span><strong id="joint-count">-- <small>/ 14</small></strong></div>
+      <div><span class="metric-label">CAN 0 <em class="left-dot"></em></span><strong id="left-status">等待左臂</strong></div>
+      <div><span class="metric-label">CAN 1 <em class="right-dot"></em></span><strong id="right-status">等待右臂</strong></div>
+      <div><span class="metric-label">当前模式</span><strong id="mode-status">未连接</strong></div>
+      <div><span class="metric-label">数据年龄</span><strong id="age-status">-- <small>ms</small></strong></div>
+    </section>
+    <div class="workspace">
+      <section class="scene-section" aria-label="机器人三维视图">
+        <div class="scene-toolbar"><div class="section-heading"><i data-lucide="box"></i><h1>双臂姿态</h1><span id="model-tag">无夹爪</span></div>
+          <div class="segmented" id="scene-modes"><button data-scene="live" class="selected">实测</button><button data-scene="target">目标</button><button data-scene="calibration">标定</button></div></div>
+        <div id="viewport"><div id="model-loading">正在加载机器人模型…</div><div class="scene-corner"><span class="legend"><b class="left-dot"></b>LEFT</span><span class="legend"><b class="right-dot"></b>RIGHT</span></div>
+          <div class="scene-tools"><button id="fit-view" class="icon" title="复位视角" aria-label="复位视角"><i data-lucide="scan"></i></button><button id="toggle-grid" class="icon selected" title="显示网格" aria-label="显示网格"><i data-lucide="grid-3x3"></i></button><button id="toggle-axes" class="icon" title="坐标轴" aria-label="坐标轴"><i data-lucide="axis-3d"></i></button></div>
+          <div class="scene-foot"><span>base_footprint</span><span id="pose-label">等待实测数据</span></div>
+        </div>
+        <div class="feedback-header"><h2>关节反馈</h2><div class="segmented"><button class="selected" data-table="left">左臂</button><button data-table="right">右臂</button></div><span class="unit-label">° · °/s · Nm</span></div>
+        <div class="table-scroll"><table><thead><tr><th>关节</th><th>位置</th><th>速度</th><th>反馈力矩</th><th>电机</th></tr></thead><tbody id="joint-table"></tbody></table></div>
+      </section>
+      <section class="control-section">
+        <div class="view" id="view-overview">
+          <div class="managed-section" hidden>
+            <div class="panel-title"><h2>控制端进程</h2><span class="eyebrow">BRIDGE 独立运行</span></div>
+            <label class="form-row">机械臂<select id="runtime-arms"><option value="dual">双臂</option><option value="left">左臂 · can0</option><option value="right">右臂 · can1</option></select></label>
+            <div class="two-columns"><button id="start-control" data-start-kind="control"><i data-lucide="play"></i>启动控制端</button><button data-stop-kind="control" class="danger-text"><i data-lucide="square"></i>停止控制端</button></div>
+            <div id="process-status" class="file-list"></div>
+          </div>
+          <div class="panel-title"><h2>控制器</h2><span class="eyebrow">ROS 2 CONTROL</span></div>
+          <div id="controllers"></div>
+          <div class="mode-buttons"><button data-mode="gravity"><i data-lucide="feather"></i>重力补偿</button><button data-mode="joint"><i data-lucide="sliders-horizontal"></i>关节位置</button><button data-mode="cartesian"><i data-lucide="move-3d"></i>笛卡尔</button></div>
+          <div class="panel-title rule"><h2>回零</h2><span class="eyebrow">模型零位 · 0°</span></div>
+          <div class="form-row"><label for="zero-duration">回零时间</label><div class="suffix-input"><input id="zero-duration" type="number" min="3" max="60" step="0.5" value="8"><span>s</span></div></div>
+          <div class="mode-buttons"><button data-zero="left"><i data-lucide="rotate-ccw"></i>左臂回零</button><button data-zero="right"><i data-lucide="rotate-ccw"></i>右臂回零</button><button data-zero="dual"><i data-lucide="rotate-ccw"></i>双臂回零</button></div>
+          <div class="panel-title rule"><h2>数据链路</h2><span id="node-count" class="eyebrow">0 NODES</span></div>
+          <ol class="pipeline"><li><i data-lucide="cable"></i><div>W3 Bridge<small>/w3_robot_bridge_node/state</small></div><span id="bridge-pill" class="pill">等待</span></li><li><i data-lucide="activity"></i><div>关节状态<small>/joint_states</small></div><span id="joint-pill" class="pill">等待</span></li><li><i data-lucide="network"></i><div>控制器管理器<small>/controller_manager</small></div><span id="manager-pill" class="pill">等待</span></li></ol>
+          <div class="panel-title rule"><h2>末端位置</h2><span class="eyebrow">BASE / m</span></div><div id="pose-readouts"></div>
+          <div class="notice"><i data-lucide="info"></i><span>重力补偿不是位置锁定。切换位置模式会保持当前姿态。</span></div>
+        </div>
+        <div class="view" id="view-joints" hidden>
+          <div class="panel-title"><h2>关节目标</h2><button id="capture-joints" class="small"><i data-lucide="refresh-cw"></i>读取当前</button></div>
+          <div class="segmented arm-select"><button data-arm="left" class="selected">左臂 · can0</button><button data-arm="right">右臂 · can1</button></div>
+          <div id="joint-inputs"></div>
+          <div class="form-row"><label for="duration">插值时间</label><div class="suffix-input"><input id="duration" type="number" min="1" max="60" step="0.5" value="3"><span>s</span></div></div>
+          <button id="send-joints" class="primary full"><i data-lucide="send"></i>发送关节目标</button>
+          <p class="field-note">单次变化 ≤ 20° · 输入不自动下发</p>
+          <div class="notice"><i data-lucide="shield-alert"></i><span>需先切换到关节位置模式。路径无碰撞检查。</span></div>
+        </div>
+        <div class="view" id="view-cartesian" hidden>
+          <div class="panel-title"><h2>末端目标</h2><button id="capture-pose" class="small"><i data-lucide="refresh-cw"></i>读取当前</button></div>
+          <div class="segmented arm-select"><button data-arm="left" class="selected">左臂 · can0</button><button data-arm="right">右臂 · can1</button></div>
+          <div class="coordinate-frame"><i data-lucide="axis-3d"></i>base_footprint <span>绝对目标</span></div>
+          <div class="input-grid" id="pose-inputs"></div>
+          <button id="send-pose" class="primary full"><i data-lucide="send"></i>发送末端目标</button>
+          <p class="field-note">单次位移 ≤ 50 mm · 姿态变化 ≤ 10°</p>
+          <div class="notice"><i data-lucide="info"></i><span>现有 IK 控制器按关节限速追踪，不保证末端直线或指定时间到达。</span></div>
+        </div>
+        <div class="view" id="view-teleop" hidden>
+          <div class="panel-title"><h2>主从遥操作</h2><span class="eyebrow">UDP</span></div>
+          <div class="managed-section" hidden>
+            <label class="form-row">本机角色<select id="teleop-role"><option value="slave">从臂</option><option value="master">主臂</option></select></label>
+            <label class="form-row">对端 IPv4<input id="teleop-host" placeholder="192.168.10.20" aria-label="对端 IPv4"></label>
+            <div class="input-grid network-inputs"><label>本地端口<input id="teleop-local-port" type="number" min="1024" max="65535" value="15000"></label><label>对端端口<input id="teleop-peer-port" type="number" min="1024" max="65535" value="15001"></label></div>
+            <div class="two-columns"><button id="start-teleop" data-start-kind="teleop"><i data-lucide="radio-tower"></i>启动遥操作</button><button data-stop-kind="teleop"><i data-lucide="square"></i>停止节点</button></div>
+          </div>
+          <div id="teleop-state" class="empty-state">等待已有遥操作节点</div>
+          <div class="action-list">
+            <button data-teleop="prepare"><i data-lucide="align-horizontal-distribute-center"></i><span>准备对齐<small>主臂将运动到从臂当前姿态</small></span><i data-lucide="chevron-right"></i></button>
+            <button data-teleop="enable"><i data-lucide="play"></i><span>开始跟随<small>使能主从关节跟随</small></span><i data-lucide="chevron-right"></i></button>
+            <button data-teleop="disable"><i data-lucide="pause"></i><span>暂停跟随<small>不等于电机失能</small></span><i data-lucide="chevron-right"></i></button>
+            <button data-teleop="exit"><i data-lucide="log-out"></i><span>退出遥操作<small>尝试恢复重力补偿</small></span><i data-lucide="chevron-right"></i></button>
+          </div>
+          <div class="notice"><i data-lucide="shield-alert"></i><span>准备对齐也会驱动机器人。服务可用不代表对端在线，实际结果以服务返回为准。</span></div>
+        </div>
+        <div class="view" id="view-calibration" hidden>
+          <div class="panel-title"><h2>关节标定</h2><span class="eyebrow">7 → 6 → 5 → 3 → 4 → 2 → 1</span></div>
+          <div class="segmented arm-select"><button data-arm="left" class="selected">左臂 · can0</button><button data-arm="right">右臂 · can1</button></div>
+          <ol class="calibration-steps"><li><b>01</b>方向确认</li><li><b>02</b>限位参考</li><li><b>03</b>手动采样</li><li><b>04</b>双臂合并</li></ol>
+          <label class="form-row">标定阶段<select id="cal-stage"><option value="direction">方向确认</option><option value="limits">限位参考</option><option value="manual">手动采样</option><option value="merge">双臂合并</option></select></label>
+          <div class="managed-section" hidden>
+            <label class="form-row" id="cal-joint-row" hidden>采样关节<select id="cal-joint"><option value="">全部 · 7-6-5-3-4-2-1</option><option value="7">J7</option><option value="6">J6</option><option value="5">J5</option><option value="3">J3</option><option value="4">J4</option><option value="2">J2</option><option value="1">J1</option></select></label>
+            <div class="two-columns"><button id="start-calibration" data-start-kind="calibration"><i data-lucide="play"></i>启动所选阶段</button><button data-stop-kind="calibration" class="danger-text"><i data-lucide="square"></i>停止标定</button></div>
+          </div>
+          <details id="cal-terminal"><summary>终端入口</summary>
+          <div class="command-block"><code id="cal-command"></code><button id="copy-cal" class="icon" title="复制命令" aria-label="复制命令"><i data-lucide="copy"></i></button></div>
+          </details>
+          <div class="panel-title rule"><h2>当前会话</h2><span class="eyebrow">手动标定</span></div>
+          <select id="cal-session" aria-label="标定会话"><option value="">没有活动会话</option></select><pre id="cal-status" class="session-status">等待标定状态</pre>
+          <div id="cal-angle-row" hidden><label class="form-row">参考角 / °<input id="cal-angle" type="number" min="-360" max="360" step="0.1"></label><button id="set-cal-angle"><i data-lucide="check"></i>更新参考角</button></div>
+          <div class="key-actions"><button data-key="enter">确认 / Enter</button><button data-key="space">翻转方向</button><button data-key="n">下一项</button><button data-key="s">跳过</button><button data-key="r">重置起点</button><button data-key="escape" class="danger-text">退出</button></div>
+          <div class="notice"><i data-lucide="shield-alert"></i><span>方向确认会使能所选整臂；手动采样仅使能当前关节。全部关节需支撑，控制端必须停止。离开或隐藏本页面会中止网页标定并尝试失能。</span></div>
+        </div>
+        <div class="view" id="view-recording" hidden>
+          <div class="panel-title"><h2>示教记录</h2><span class="eyebrow">JOINT STATES / 20 Hz</span></div>
+          <div class="record-display"><span id="record-label">未录制</span><strong id="record-time">00:00.0</strong><span id="record-count">0 帧</span></div>
+          <div class="two-columns"><button id="record-start"><i data-lucide="circle-dot"></i>开始记录</button><button id="record-stop" disabled><i data-lucide="square"></i>停止并保存</button></div>
+          <p class="field-note">只采集数据，不切换控制器 · 最长 120 s</p>
+          <div class="panel-title rule"><h2>本地轨迹</h2><button id="refresh-recordings" class="icon" title="刷新轨迹" aria-label="刷新轨迹"><i data-lucide="refresh-cw"></i></button></div>
+          <div id="recordings" class="file-list"></div>
+          <button data-stop-kind="replay" class="managed-section full" hidden><i data-lucide="square"></i>停止回放</button>
+          <div class="notice"><i data-lucide="shield-alert"></i><span>回放将以 0.5 倍速执行，5 s 进入轨迹起点；没有碰撞检查。预览数据禁止真机回放。</span></div>
+        </div>
+        <div class="view" id="view-config" hidden>
+          <div class="panel-title"><h2>运行配置</h2><button id="refresh-config" class="icon" title="刷新配置" aria-label="刷新配置"><i data-lucide="refresh-cw"></i></button></div>
+          <dl class="config-info"><dt>工作空间</dt><dd id="workspace-path"></dd><dt>连接方式</dt><dd>本机已有 ROS 2 节点</dd><dt>控制模型</dt><dd id="config-model">固定基座 · 双臂 · 无夹爪</dd><dt>标定数据</dt><dd>本机文件 · 不上传 Git</dd></dl>
+          <div class="panel-title rule"><h2>配置文件</h2><span class="eyebrow">读取检查</span></div><div id="config-files" class="file-list"></div>
+          <div class="notice"><i data-lucide="info"></i><span>可读取不等于标定有效。重标后合并零偏并重启控制器。</span></div>
+        </div>
+      </section>
+    </div>
+    <section class="logs-section"><div class="logs-header"><h2><i data-lucide="terminal"></i>运行日志</h2><div><select id="log-filter" aria-label="日志等级"><option value="all">全部</option><option value="warn">告警与错误</option><option value="error">错误</option></select><button id="clear-logs" class="icon" title="清空当前显示" aria-label="清空当前显示"><i data-lucide="list-x"></i></button></div></div><div id="logs" role="log" aria-label="日志内容"><div class="log-empty">等待日志</div></div></section>
+    <footer><span>IEIR / W3 双臂</span><span id="footer-status">本地控制台 · 只读</span><span>ROS 2 Humble</span></footer>
+  </main>
+  <dialog id="confirm-dialog"><form method="dialog"><div class="dialog-icon"><i data-lucide="shield-alert"></i></div><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="dialog-actions"><button value="cancel">取消</button><button value="confirm" class="primary">确认执行</button></div></form></dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

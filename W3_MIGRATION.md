@@ -13,7 +13,7 @@
 - 默认无夹爪，不启动夹爪节点，不发送夹爪 CAN 命令，真机模型不含夹爪质量。
 - 不引入底盘、腰部模型/控制器或 WebUI。W3 驱动内保留的其他协议代码不被双臂配置启用。
 - 旧 USB2CAN 源码留作参考，通过 COLCON_IGNORE 排除构建；运行与标定工具均已切到 W3。
-- 原 MuJoCo 仿真/镜像面板保留。其静态 MJCF 仍带夹爪；真机重力补偿使用的是下面的可选夹爪 URDF，不使用面板 MJCF。
+- MuJoCo 仿真/兼容面板已移至可选 `simulation/ieir_simulation`，默认不构建，真机和默认标定不依赖它。其静态 MJCF 仍带夹爪；真机重力补偿只使用可选夹爪 URDF，不使用 MJCF。
 
 ## 构建
 
@@ -22,14 +22,14 @@
 ```bash
 cd /home/lhp/ros2_ws/w3_dual_arm_ws
 source /opt/ros/humble/setup.bash
-CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --base-paths src --packages-up-to eiriarm_controllers eiriarm_bringup
+CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --base-paths src --packages-up-to ieir_controllers ieir_bringup
 source install/setup.bash
 ```
 
 离线测试，不连接 CAN：
 
 ```bash
-colcon test --base-paths src --packages-select w3_robot_bridge eiriarm_controllers
+colcon test --base-paths src --packages-select w3_robot_bridge ieir_controllers
 colcon test-result --verbose
 ```
 
@@ -42,11 +42,11 @@ can0 不打开、不轮询、不发送 watchdog 或使能/失能帧。夹爪仍�
 先停止旧 bridge，再启动，禁止同时运行两个 bridge：
 
 ```bash
-ros2 launch eiriarm_bringup bridge.launch.py arms:=right gripper:=false
+ros2 launch ieir_bringup bridge.launch.py arms:=right gripper:=false
 ```
 
 单独测试右臂时，控制端也必须选择右臂并指定标定文件：
-`ros2 launch eiriarm_bringup real_robot.launch.py arms:=right gripper:=false offsets_yaml:=src/ros2_ws_config/joint_offsets_right.yaml`。
+`ros2 launch ieir_bringup real_robot.launch.py arms:=right gripper:=false offsets_yaml:=src/ros2_ws_config/joint_offsets_right.yaml`。
 控制端默认仍为 dual；单臂模式支持重力补偿/关节控制，当前笛卡尔控制器要求 dual。
 双臂时建议 bridge 显式传 `arms:=dual`。以下双臂流程已显式指定该参数。
 
@@ -80,22 +80,24 @@ CAN 配置命令见根 README 第 4 节；先停止控制并支撑机器人，�
 第一步，右臂方向确认：
 
 ```bash
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode direction \
   --calibration-yaml src/ros2_ws_config/joint_calibration_dual_right.yaml \
   --output src/ros2_ws_config/joint_directions_right.yaml
 ```
 
-会自动打开独立 MuJoCo 窗口，仅做 FK 显示，不运行物理、不发布机器人目标。
+默认使用 Web UI 的标定页，仅做 FK 显示，不运行物理、不发布机器人位置目标。
+先启动 `ros2 launch ieir_bringup ui.launch.py workspace:="$PWD"` 并打开标定页；
+推荐直接在网页选择方向确认阶段，不需要执行上面的终端命令。
 模型起始为全零；每次只有当前高亮关节显示 `axis_sign * (raw_now - raw_start)`。
 不要求编码器读数为零，也不会把近似零姿态作为最终零偏。
 
-1. 真实手臂摆在接近模型零位，点击 MuJoCo 窗口获得焦点。
+1. 真实手臂摆在接近模型零位，保持网页标定页可见。
 2. 按 Enter 记录当前关节增量起点，模型仍为零。
 3. 手动小幅运动当前关节，至少约 5 度；比较真实与模型运动方向。
 4. 相反按空格翻转显示；一致按 Enter 确认，进入下一关节并清零模型。
 5. R 清除本关节起点，恢复近零后再按 Enter；Backspace 返回上一关节。
-6. Esc、关闭窗口或终端 Ctrl+C 中止，脚本尝试失能并确认反馈。
+6. 网页停止、心跳丢失或终端 Ctrl+C 中止，脚本尝试失能并确认反馈。网页提供对应确认/翻转操作按钮。
 
 增量超过 1 rad、相邻显示采样跳变超过 0.35 rad 或反馈丢失，会阻止确认；
 恢复反馈、把手臂放回近零后按 R 重做。鼠标左拖旋转视角，右拖平移，滚轮缩放。
@@ -107,7 +109,7 @@ ros2 run eiriarm_controllers joint_zero_calibration \
 
 ```bash
 source install/setup.bash
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode limit-preview \
   --calibration-yaml src/ros2_ws_config/joint_calibration_dual_right.yaml \
   --output src/ros2_ws_config/joint_calibration_dual_right_reviewed.yaml
@@ -130,7 +132,7 @@ ros2 run eiriarm_controllers joint_zero_calibration \
 带方向文件进行限位标定：
 
 ```bash
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode hard-stop \
   --calibration-yaml src/ros2_ws_config/joint_calibration_dual_right.yaml \
   --directions-yaml src/ros2_ws_config/joint_directions_right.yaml \
@@ -163,7 +165,7 @@ ros2 run eiriarm_controllers joint_zero_calibration \
 
 ```bash
 source install/setup.bash
-ros2 run eiriarm_controllers joint_manual_calibration \
+ros2 run ieir_controllers joint_manual_calibration \
   --calibration-yaml src/ros2_ws_config/joint_calibration_dual_right_reviewed.yaml \
   --directions-yaml src/ros2_ws_config/joint_directions_right.yaml \
   --output src/ros2_ws_config/joint_offsets_right.yaml
@@ -196,9 +198,8 @@ ros2 run eiriarm_controllers joint_manual_calibration \
 离线测试使用独立 ROS 域、假反馈，不连接 CAN：
 
 ```bash
-python3 src/eiriarm_controllers/test/check_manual_calibration.py
-python3 src/eiriarm_controllers/test/check_manual_calibration.py --skip-existing
-python3 src/eiriarm_controllers/test/check_manual_calibration.py --exit-after-capture
+python3 src/ieir_bringup/test/check_web_workflow.py
+# 兼容 MuJoCo 窗口的测试已移至 simulation/ieir_simulation/test，需额外构建仿真包。
 ```
 
 ### 原单阶段流程（兼容保留）
@@ -208,18 +209,18 @@ python3 src/eiriarm_controllers/test/check_manual_calibration.py --exit-after-ca
 标定前只启动 bridge，不同时启动控制器或摩擦测试：
 
 ```bash
-ros2 launch eiriarm_bringup bridge.launch.py arms:=dual
+ros2 launch ieir_bringup bridge.launch.py arms:=dual
 ```
 
 另一个终端 source 本工作区后标定：
 
 ```bash
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode hard-stop \
   --calibration-yaml src/ros2_ws_config/joint_calibration_dual_left.yaml \
   --output src/ros2_ws_config/joint_offsets_left.yaml
 
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode hard-stop \
   --calibration-yaml src/ros2_ws_config/joint_calibration_dual_right.yaml \
   --output src/ros2_ws_config/joint_offsets_right.yaml
@@ -238,20 +239,20 @@ python3 src/ros2_ws_config/merge_offsets.py
 完成本机标定后，保持 bridge 运行，在第二个终端启动：
 
 ```bash
-ros2 launch eiriarm_bringup real_robot.launch.py
+ros2 launch ieir_bringup real_robot.launch.py
 # 或
-ros2 launch eiriarm_bringup real_robot.launch.py controller:=cartesian_position
+ros2 launch ieir_bringup real_robot.launch.py controller:=cartesian_position
 ```
 
 默认 `gripper:=false`。两端 UDP 遥操作原流程保留，例如：
 
 ```bash
 # 主臂
-ros2 launch eiriarm_bringup real_robot.launch.py \
+ros2 launch ieir_bringup real_robot.launch.py \
   teleop:=true teleop_node_role:=master \
   teleop_peer_host:=192.168.10.20 teleop_local_port:=15000 teleop_peer_port:=15001
 # 从臂
-ros2 launch eiriarm_bringup real_robot.launch.py \
+ros2 launch ieir_bringup real_robot.launch.py \
   teleop:=true teleop_node_role:=slave \
   teleop_peer_host:=192.168.10.10 teleop_local_port:=15001 teleop_peer_port:=15000
 ```
@@ -263,8 +264,8 @@ ros2 launch eiriarm_bringup real_robot.launch.py \
 安装夹爪后，bridge 和控制器两个终端都传 `gripper:=true`：
 
 ```bash
-ros2 launch eiriarm_bringup bridge.launch.py arms:=dual gripper:=true
-ros2 launch eiriarm_bringup real_robot.launch.py gripper:=true
+ros2 launch ieir_bringup bridge.launch.py arms:=dual gripper:=true
+ros2 launch ieir_bringup real_robot.launch.py gripper:=true
 ```
 
 独立启动 `teleop.launch.py` 时也传 `gripper:=true`；

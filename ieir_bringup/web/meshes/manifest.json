@@ -1,0 +1,134 @@
+{
+  "f42c64e9e237fd314a7436f89d7329125da591688d6e6687b7716254d4929d84": {
+    "file": "f42c64e9e237fd314a7436f89d7329125da591688d6e6687b7716254d4929d84.stl",
+    "source": "dual_arm_support/meshes/base_link.STL",
+    "source_faces": 3580,
+    "faces": 3570
+  },
+  "7fc4d5a613769f43912181371dc8ed3d22ddd35ea311bef19b1e25b1bdb79da9": {
+    "file": "7fc4d5a613769f43912181371dc8ed3d22ddd35ea311bef19b1e25b1bdb79da9.stl",
+    "source": "dual_arm_support/meshes/left_arm_attachment_point.STL",
+    "source_faces": 316,
+    "faces": 316
+  },
+  "985b2e68f39a5e222cb1be50501112bf48a42be674a7fa4dbd635310e39b3678": {
+    "file": "985b2e68f39a5e222cb1be50501112bf48a42be674a7fa4dbd635310e39b3678.stl",
+    "source": "dual_arm_support/meshes/right_arm_attachment_point.STL",
+    "source_faces": 316,
+    "faces": 316
+  },
+  "44b259d4504ea879fe434bada4a3d54e60e00fa259ab8a94e6113e69b1bdd837": {
+    "file": "44b259d4504ea879fe434bada4a3d54e60e00fa259ab8a94e6113e69b1bdd837.stl",
+    "source": "gripper_description/meshes/gripper_base_link.STL",
+    "source_faces": 34184,
+    "faces": 16407
+  },
+  "72642fbb99155a1f43a4406e4da06a023881a8969110e3b418ae6689cf57eded": {
+    "file": "72642fbb99155a1f43a4406e4da06a023881a8969110e3b418ae6689cf57eded.stl",
+    "source": "gripper_description/meshes/left_finger.STL",
+    "source_faces": 21504,
+    "faces": 10320
+  },
+  "c53fc03e14fa0be0419e2eb4db8564833db03fa2a37b30412690662cfababfac": {
+    "file": "c53fc03e14fa0be0419e2eb4db8564833db03fa2a37b30412690662cfababfac.stl",
+    "source": "gripper_description/meshes/right_finger.STL",
+    "source_faces": 21504,
+    "faces": 10320
+  },
+  "0a2dad2d5c4c7cf16f794dd2a1125d18bc404b7e373548d74ca0e4e88415ebf6": {
+    "file": "0a2dad2d5c4c7cf16f794dd2a1125d18bc404b7e373548d74ca0e4e88415ebf6.stl",
+    "source": "left_arm_description/meshes/left_base_link.STL",
+    "source_faces": 19558,
+    "faces": 9384
+  },
+  "b61088997ae0a1c0b80308585e451faf7db765de6b0f45f664e4f51662cf65ba": {
+    "file": "b61088997ae0a1c0b80308585e451faf7db765de6b0f45f664e4f51662cf65ba.stl",
+    "source": "left_arm_description/meshes/left_link_1.STL",
+    "source_faces": 48082,
+    "faces": 23075
+  },
+  "77757e91171ec1f2218c4639f57b8f2103d2c313251c52dd4bc1f16e4ec60ac1": {
+    "file": "77757e91171ec1f2218c4639f57b8f2103d2c313251c52dd4bc1f16e4ec60ac1.stl",
+    "source": "left_arm_description/meshes/left_link_2.STL",
+    "source_faces": 11974,
+    "faces": 2872
+  },
+  "ea491134fa4d5a74cfa9be009332a7802057217970b4e5a3f4deda64fd26e358": {
+    "file": "ea491134fa4d5a74cfa9be009332a7802057217970b4e5a3f4deda64fd26e358.stl",
+    "source": "left_arm_description/meshes/left_link_3.STL",
+    "source_faces": 65506,
+    "faces": 12000
+  },
+  "d8efd06b3e014ba10d60eb2ae1ba7f7d61e59201ba3fe4252d2823535da2b4a6": {
+    "file": "d8efd06b3e014ba10d60eb2ae1ba7f7d61e59201ba3fe4252d2823535da2b4a6.stl",
+    "source": "left_arm_description/meshes/left_link_4.STL",
+    "source_faces": 14274,
+    "faces": 1712
+  },
+  "ad18033c2cacfdb6cd03360015fdd685d2ff0590fc545a0cd431285287e27d13": {
+    "file": "ad18033c2cacfdb6cd03360015fdd685d2ff0590fc545a0cd431285287e27d13.stl",
+    "source": "left_arm_description/meshes/left_link_5.STL",
+    "source_faces": 42940,
+    "faces": 20608
+  },
+  "2048e7673a3662512fe8579f6512455ff25986f5a26966fb27274fede518fcc4": {
+    "file": "2048e7673a3662512fe8579f6512455ff25986f5a26966fb27274fede518fcc4.stl",
+    "source": "left_arm_description/meshes/left_link_6.STL",
+    "source_faces": 35977,
+    "faces": 8634
+  },
+  "69e0496beed07c34aee38b13ad11bacb79acf87bc1006e4654b78e1a8238ead4": {
+    "file": "69e0496beed07c34aee38b13ad11bacb79acf87bc1006e4654b78e1a8238ead4.stl",
+    "source": "left_arm_description/meshes/left_link_7.STL",
+    "source_faces": 16784,
+    "faces": 8056
+  },
+  "5935c5568e031b966f3af0aa44c21e1b4eb97413ddc961086296d5d3c1f23db5": {
+    "file": "5935c5568e031b966f3af0aa44c21e1b4eb97413ddc961086296d5d3c1f23db5.stl",
+    "source": "right_arm_description/meshes/right_base_link.STL",
+    "source_faces": 18556,
+    "faces": 8904
+  },
+  "c50efd860743831f5bc058eab6d52a73cc9b370bf812af900c53e0d34c338556": {
+    "file": "c50efd860743831f5bc058eab6d52a73cc9b370bf812af900c53e0d34c338556.stl",
+    "source": "right_arm_description/meshes/right_link_1.STL",
+    "source_faces": 47052,
+    "faces": 22584
+  },
+  "d5c8e2c11e6dd06a2d099eff975a89e62bd62c3e0bb3cb9b9f9654516da0cd96": {
+    "file": "d5c8e2c11e6dd06a2d099eff975a89e62bd62c3e0bb3cb9b9f9654516da0cd96.stl",
+    "source": "right_arm_description/meshes/right_link_2.STL",
+    "source_faces": 11970,
+    "faces": 5744
+  },
+  "627b51d8926ce5017c5f5150ebedf3867b566a4bac74a8923c9e029e04af4c6b": {
+    "file": "627b51d8926ce5017c5f5150ebedf3867b566a4bac74a8923c9e029e04af4c6b.stl",
+    "source": "right_arm_description/meshes/right_link_3.STL",
+    "source_faces": 61639,
+    "faces": 5999
+  },
+  "1fa60c9fcc098669d1f807e20ab67d83db82a36454f46b0a5e674ef41cf6a393": {
+    "file": "1fa60c9fcc098669d1f807e20ab67d83db82a36454f46b0a5e674ef41cf6a393.stl",
+    "source": "right_arm_description/meshes/right_link_4.STL",
+    "source_faces": 42970,
+    "faces": 5155
+  },
+  "cb3a9ba39376accabfec1a402ef45ce951065b260e7c936281faa658c69d16f1": {
+    "file": "cb3a9ba39376accabfec1a402ef45ce951065b260e7c936281faa658c69d16f1.stl",
+    "source": "right_arm_description/meshes/right_link_5.STL",
+    "source_faces": 42843,
+    "faces": 20564
+  },
+  "055bb3cd5e558a75686f5e3e1d2f4e705c62eebfeddd3885c1a4934befb6f599": {
+    "file": "055bb3cd5e558a75686f5e3e1d2f4e705c62eebfeddd3885c1a4934befb6f599.stl",
+    "source": "right_arm_description/meshes/right_link_6.STL",
+    "source_faces": 35913,
+    "faces": 4308
+  },
+  "5eb1774e250822a47eff97c12647233501c767fdc0f083cf0cf9296d4e1ba968": {
+    "file": "5eb1774e250822a47eff97c12647233501c767fdc0f083cf0cf9296d4e1ba968.stl",
+    "source": "right_arm_description/meshes/right_link_7.STL",
+    "source_faces": 16784,
+    "faces": 8056
+  }
+}

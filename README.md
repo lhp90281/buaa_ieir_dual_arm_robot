@@ -1,8 +1,10 @@
-# EiriArm W3 双臂控制工作区
+# IEIR W3 双臂控制工作区
 
 将原 USB2CAN 双臂控制迁移到 **W3 SocketCAN FD**：can0 左臂、can1 右臂，每臂 7 个达妙电机，**夹爪默认未装配/不启动**。
-保留重力补偿、关节/笛卡尔控制、MuJoCo 显示/仿真、方向与全手动标定、示教回放和双机主从遥操作。
-不启动底盘、腰部、can2 或 Web UI。
+保留重力补偿、关节/笛卡尔控制、方向与全手动标定、示教回放和双机主从遥操作。
+真机日常面板统一使用本地 Web UI，可管理控制端、全手动标定、遥操作和回放。
+**真机控制、网页模型、标定、遥操作均不依赖 MuJoCo/GLFW。** 仿真已拆成可选 `ieir_simulation` 包，默认不安装、不构建。
+不启动底盘、腰部、can2 或全身版 Web UI；本分支提供独立的本地双臂网页。
 
 发布分支为 `feat/w3-dual-arm-can`，不覆盖原仓库 main。
 不要混用 `ieir_dualarm_for_waic` 全身仓库的 install 或 launch。
@@ -11,6 +13,9 @@
 - [完整算法、坐标和接口](docs/CONTROL_PIPELINE.md)
 - [配置文件与标定产物](ros2_ws_config/README.md)
 - [发布验证与已知限制](docs/RELEASE_CHECKLIST.md)
+- [统一网页控制台](docs/WEB_CONSOLE.md)：手动启动 bridge 后，其余控制与标定在网页交互完成。
+- [可选仿真包](simulation/README.md)：单独安装、构建和启动，不连接 CAN。
+- [IEIR 更名迁移](docs/IEIR_MIGRATION.md)：旧工作区升级与远端仓库名称。
 - [迁移和标定细节](W3_MIGRATION.md)
 
 ## 1. 安全边界
@@ -28,20 +33,20 @@
 ## 2. 环境与克隆
 
 已验证基线：**Ubuntu 22.04 x86_64、ROS 2 Humble、系统 Python 3.10、GCC 11**。
-MuJoCo C SDK **3.3.0** 的头文件和 x86_64 动态库随仓库提供，不需 pip 安装 mujoco。
+仅可选仿真包附带 MuJoCo C SDK **3.3.0**，不需 pip 安装 mujoco，真机不加载该库。
 Pinocchio 使用 ROS apt 包，当前验证版本 **3.9.0**；apt 候选版本会更新，
 安装脚本不强制降级系统，其他大版本需重新构建和测试，不能假定已验证。
 ARM64/Ubuntu 24.04/Jazzy 未验证，不要把附带 x86_64 库用于 ARM 工控机。
 
 先按 [ROS 官方 Humble apt 安装说明](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)
-安装 ROS（推荐 desktop）。本仓库不自动改系统 apt 源或内核/CAN 驱动。
+安装 ROS（`ros-base` 即可，Web UI 不需要桌面、RViz 或 DISPLAY）。本仓库不自动改系统 apt 源或内核/CAN 驱动。
 使用全新独立工作区，以下示例不要覆盖旧的 ~/ros2_ws：
 
 ```bash
 mkdir -p ~/w3_dual_arm_ws
 cd ~/w3_dual_arm_ws
 git clone --branch feat/w3-dual-arm-can \
-  https://github.com/lhp90281/buaa_eiri_dual_arm_robot.git src
+  https://github.com/lhp90281/buaa_ieir_dual_arm_robot.git src
 ```
 
 仓库是源码根目录，克隆到 src，不含 build/install/log。
@@ -50,10 +55,10 @@ W3 源码已随仓库收录，不是 submodule，无需再克隆另一份 W3。
 | 目录 | 内容 |
 |---|---|
 | W3_ROBOT/w3_robot_bridge | W3 消息、服务、协议、电机参数、双 CAN FD bridge |
-| eiriarm_controllers | ros2_control、Pinocchio、硬件接口、标定、遥操作 |
-| eiriarm_bringup | 真机、仿真、面板、示教和遥操作 launch |
-| eiriarm_mujoco | 仿真/显示、标定显示器、MuJoCo SDK |
-| description | 双臂与夹爪 URDF/MJCF/STL |
+| ieir_controllers | ros2_control、Pinocchio、硬件接口、标定、遥操作 |
+| ieir_bringup | 真机、Web UI、示教和遥操作 launch |
+| simulation/ieir_simulation | 可选独立仿真包，含 SDK、MJCF、仿真 launch/config/topic 硬件插件、兼容显示器 |
+| description | 真机与网页共用的双臂/夹爪 URDF、原始 STL，不含仿真硬件插件 |
 | ros2_ws_config | 运行时从源码读取的本机标定、摩擦参数和合并脚本 |
 | USB2CAN | 历史参考，COLCON_IGNORE 排除，不参与新构建 |
 
@@ -71,7 +76,7 @@ source install/setup.bash
 ```
 
 安装脚本要求已有 /opt/ros/humble/setup.bash，安装编译工具、rosdep、ros2_control、
-Pinocchio、GLFW、CAN 工具，再按 package.xml 补齐依赖。
+Pinocchio、CAN 工具，再按 package.xml 补齐依赖；默认不安装仿真图形依赖。
 只检查不安装：`bash src/scripts/install_dependencies.sh --check`。
 网络、apt 源、rosdep 失败会停止，不静默跳过依赖。
 
@@ -79,13 +84,15 @@ Pinocchio、GLFW、CAN 工具，再按 package.xml 补齐依赖。
 减少 Pinocchio 内存峰值。内存足够可用 `JOBS=2 bash src/scripts/build_workspace.sh "$PWD"`。
 手工入口为 `colcon build --base-paths src --executor sequential`。
 嵌套工作区若父目录有 COLCON_IGNORE，仍须显式给出 base-paths。
+`src/simulation/COLCON_IGNORE` 只阻止默认递归发现仿真；显式 `--with-simulation` 才加入该包。
+旧版本升级必须清理旧构建缓存，见 [更名迁移](docs/IEIR_MIGRATION.md)，不要继续叠加旧包的 install。
 
 ```bash
 # 以下测试不连接 CAN
-colcon test --packages-select w3_robot_bridge eiriarm_controllers --event-handlers console_direct+
+colcon test --base-paths src --packages-select w3_robot_bridge ieir_controllers ieir_bringup --event-handlers console_direct+
 colcon test-result --verbose
 ros2 pkg prefix w3_robot_bridge
-ros2 pkg prefix eiriarm_controllers
+ros2 pkg prefix ieir_controllers
 ```
 
 prefix 必须指向本工作区。每个新运行终端执行 `cd ~/w3_dual_arm_ws; source install/setup.bash`。
@@ -116,7 +123,7 @@ ip -details -statistics link show can1
 终端 A 保留运行：
 
 ```bash
-ros2 launch eiriarm_bringup bridge.launch.py arms:=dual gripper:=false
+ros2 launch ieir_bringup bridge.launch.py arms:=dual gripper:=false
 ```
 
 默认 arms 已统一为 dual，排查单臂显式用 left/right；
@@ -148,7 +155,7 @@ SIDE=left  # 完成后改 right，核对对应物理臂
 ### 5.1 方向（已有正确 directions 文件可跳过）
 
 ```bash
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode direction \
   --calibration-yaml "$C/joint_calibration_dual_${SIDE}.yaml" \
   --output "$C/joint_directions_${SIDE}.yaml"
@@ -162,7 +169,7 @@ ros2 run eiriarm_controllers joint_zero_calibration \
 ### 5.2 限位参考角（只显示，无电机命令）
 
 ```bash
-ros2 run eiriarm_controllers joint_zero_calibration \
+ros2 run ieir_controllers joint_zero_calibration \
   --mode limit-preview \
   --calibration-yaml "$C/joint_calibration_dual_${SIDE}.yaml" \
   --output "$C/joint_calibration_dual_${SIDE}_reviewed.yaml"
@@ -176,7 +183,7 @@ E 输入角度，Enter 结束编辑，再 Enter 确认；方向键微调 1 度�
 ### 5.3 全手动零偏采样
 
 ```bash
-ros2 run eiriarm_controllers joint_manual_calibration \
+ros2 run ieir_controllers joint_manual_calibration \
   --calibration-yaml "$C/joint_calibration_dual_${SIDE}_reviewed.yaml" \
   --directions-yaml "$C/joint_directions_${SIDE}.yaml" \
   --output "$C/joint_offsets_${SIDE}.yaml"
@@ -211,13 +218,30 @@ W3 motor YAML 保持 position_offset=0、signs=+1，仅硬件接口做一次符�
 
 ## 6. 真机控制与 UI
 
-退出标定，保留 bridge。终端 B（**会使能真机，不是只读窗口**）：
+推荐：终端 A 手动启动 bridge，终端 B 只启动总 UI（本步骤不使能电机）：
+
+```bash
+cd ~/w3_dual_arm_ws  # 本机已有目录为 ~/ros2_ws/w3_dual_arm_ws 时使用该路径
+source install/setup.bash
+# 终端 A
+ros2 launch ieir_bringup bridge.launch.py arms:=dual gripper:=false
+# 终端 B，同样 cd/source 后
+ros2 launch ieir_bringup ui.launch.py workspace:="$PWD" gripper:=false
+```
+
+打开 http://127.0.0.1:8766 ，解锁后在“运行总览”选择机械臂并确认“启动控制端”，此时才使能电机。
+页面可切模式、回零、启停遥操作/回放；停止控制端后可直接在标定页运行方向确认、限位编辑、手动采样及合并。
+所有关节先支撑，控制和标定互斥。无夹爪默认不加载夹爪质量。详见[网页完整流程](docs/WEB_CONSOLE.md)。
+网页启动控制端时内部使用 `use_web:=false`，不递归启动第二个网页。外部控制器必须由原终端停止，网页不会强杀外部进程。
+
+兼容方式：不用网页管理进程时，退出标定、保留 bridge，在终端 B 直接启动控制器
+（**以下命令会立即使能真机，不是只读窗口**）：
 
 ```bash
 cd ~/w3_dual_arm_ws
 source install/setup.bash
-ros2 launch eiriarm_bringup real_robot.launch.py \
-  arms:=dual controller:=gravity gripper:=false use_gui:=true \
+ros2 launch ieir_bringup real_robot.launch.py \
+  arms:=dual controller:=gravity gripper:=false use_web:=true web_allow_control:=true \
   offsets_yaml:="$PWD/src/ros2_ws_config/joint_offsets_dual.yaml" \
   friction_model_yaml:="$PWD/src/ros2_ws_config/friction_model.yaml"
 ```
@@ -226,29 +250,36 @@ ros2 launch eiriarm_bringup real_robot.launch.py \
 关节/笛卡尔控制器加载但 inactive。重力控制器在位置模式下继续提供前馈。
 首次只验证标定姿态时，可在上述命令加 `gravity_compensation:=false`，同时保持
 `controller:=gravity gripper:=false teleop:=false`：仍使能反馈，但不激活力矩/位置控制器。
-此时必须支撑全部关节；不要按 UI 的 G/J/K/H/E/S/T 等控制键，否则会切换模式。
+此时必须支撑全部关节，并设置 `web_allow_control:=false`，仅查看反馈，不要从其他节点切换模式。
 - gripper=false 删除控制 URDF 的夹爪子树与质量，不只是停止节点。
-- UI 使用独立 MJCF，可能仍画出夹爪，不代表重力计算含夹爪质量。
+- Web UI 使用 URDF/STL，`gripper` 参数同步传给网页显示。
 - 单臂用 arms:=right 和对应 joint_offsets_right.yaml，bridge 也用 right。
 - 笛卡尔模式仅支持 dual；勿重复启动 real_robot，勿与仿真共用 ROS 域。
 
-已有控制端，只补 UI：
+打开 http://127.0.0.1:8766 。页面默认锁定，开启“允许控制”后逐次确认操作。
+`use_web` 默认开启，但 `web_allow_control` 默认 false（只读）；无网页可用 `use_web:=false`。
+旧 `use_gui:=true/false` 仅作为 `use_web` 默认值的兼容参数，不再启动 MuJoCo 真机面板。
+不要同时启动两个同端口网页服务，端口占用用 `web_port:=8767`。
+
+已有控制端，只补 UI（不会启动控制器、使能电机）：
 
 ```bash
-ros2 launch eiriarm_bringup mujoco_panel.launch.py mode:=mirror_real
+ros2 launch ieir_bringup web_console.launch.py \
+  workspace:="$PWD" port:=8766 allow_control:=true gripper:=false
 ```
 
-mirror_real 订阅 joint_states，不运行物理、不发布 joint_states。无反馈时不代表真实姿态。
-**面板含真机控制快捷键，不是锁定的安全只读工具**。首先只观察模型与实物是否一致。
+网页只订阅实测，不运行物理或发布 joint_states。先核对模型与实物是否一致。
+姿态使用 30 Hz 独立流和浏览器显示插值；日志/表格保持约 4 Hz，插值不改变控制命令。
 
-| 键 | 影响 |
+| 页面入口 | 影响 |
 |---|---|
-| G | 回重力补偿，不等于失能 |
-| J / K | 切关节位置 / 笛卡尔 |
-| H | 插值到模型全零，可能大幅运动 |
-| E | 保持当前姿态，进入目标编辑 |
-| S / C | 下发编辑目标 / 取消 |
-| T / Y / U | 遥操作准备对齐 / 开关跟随 / 退出回重力 |
+| 总览 → 重力补偿 | 切换重力模式，不等于失能 |
+| 总览 → 关节位置 / 笛卡尔 | 切换位置接口，保留重力前馈 |
+| 总览 → 左臂 / 右臂 / 双臂回零 | 自动切关节位置，默认 8 秒回模型零位，大行程自动延长，需确认路径 |
+| 关节控制 | 读取当前、编辑草稿、确认后发送目标和插值时间 |
+| 主从遥操作 | 准备对齐 / 开始 / 暂停 / 退出 |
+
+回零不修改电机零偏，不做碰撞规划。关闭或锁定页面不停止已有轨迹和遥操作。
 
 用 ros2 control list_controllers 查看活跃状态。
 正常停机：支撑，停止遥操作/回放，停止控制端并确认失能，最后停 bridge。
@@ -256,27 +287,27 @@ mirror_real 订阅 joint_states，不运行物理、不发布 joint_states。无
 
 ## 7. 关节、笛卡尔与示教
 
-启动选择 controller:=joint_position 或 cartesian_position；已有 GUI 用 J/K，
+启动选择 controller:=joint_position 或 cartesian_position；已有网页在总览切换，
 不要再启动第二套控制器。关节/笛卡尔互斥，均与重力 effort 前馈共存。
 
 /joint_position_command 接收 JointTrajectory，关节名 left_joint_0..6/right_joint_0..6，
 角度 rad，time_from_start 秒/纳秒，内部时间分段线性插值、末点保持。
-不是碰撞规划器，没有通用 jerk 限制；小范围验证优先用 E 编辑、S 下发。
+不是碰撞规划器，没有通用 jerk 限制；小范围验证优先用网页关节控制草稿，确认后下发。
 
 笛卡尔输入 /cartesian_position_controller/{left,right}_target_pose 为 PoseStamped，
 **数值须已在 base_footprint 下**，不能只改 frame_id 期待 TF 换算。
 末端 frame 为 {left,right}_attachment_point。交互入口：
-`ros2 run eiriarm_controllers cartesian_keyboard_control`。
+`ros2 run ieir_controllers cartesian_keyboard_control`。
 当前是 IK 后的关节限速插值，不是全身版本的“末端增量+时间”接口，也不是双臂刚性约束。
 
 示教/回放需已有 bridge 和控制端。拖动录制时用重力模式：
 
 ```bash
-ros2 launch eiriarm_bringup record.launch.py output:=recordings/demo.yaml
+ros2 launch ieir_bringup record.launch.py output:=recordings/demo.yaml
 # Ctrl-C 保存，确认扫掠空间后回放：
-ros2 launch eiriarm_bringup replay.launch.py input:=recordings/demo.yaml time_scale:=0.5 ramp_in:=5.0
+ros2 launch ieir_bringup replay.launch.py input:=recordings/demo.yaml time_scale:=0.5 ramp_in:=5.0
 # 仅模型零位无干涉时使用：
-ros2 launch eiriarm_bringup go_home.launch.py duration:=8.0
+ros2 launch ieir_bringup go_home.launch.py duration:=8.0
 ```
 
 回放默认切关节控制、保留重力，结束恢复重力。录制文件不随仓库提交。
@@ -289,14 +320,14 @@ ros2 launch eiriarm_bringup go_home.launch.py duration:=8.0
 主机 ROS_DOMAIN_ID=41，从机=42；每台机器所有本地终端都用自己的同一域。
 
 每台终端 A source 后 export 对应域，再启动 bridge：
-`ros2 launch eiriarm_bringup bridge.launch.py arms:=dual gripper:=false`。
+`ros2 launch ieir_bringup bridge.launch.py arms:=dual gripper:=false`。
 示例 IP 按实际网卡修改，放行对应 UDP 端口：
 
 ```bash
 # 主机 192.168.10.10，终端 B 已 source 本工作区
 export ROS_DOMAIN_ID=41
-ros2 launch eiriarm_bringup real_robot.launch.py \
-  arms:=dual gripper:=false use_gui:=true teleop:=true \
+ros2 launch ieir_bringup real_robot.launch.py \
+  arms:=dual gripper:=false use_web:=true web_allow_control:=true teleop:=true \
   teleop_node_role:=master teleop_mode:=no_feedback \
   teleop_peer_host:=192.168.10.20 teleop_local_port:=15000 teleop_peer_port:=15001
 ```
@@ -304,14 +335,15 @@ ros2 launch eiriarm_bringup real_robot.launch.py \
 ```bash
 # 从机 192.168.10.20，终端 B 已 source 本工作区
 export ROS_DOMAIN_ID=42
-ros2 launch eiriarm_bringup real_robot.launch.py \
-  arms:=dual gripper:=false use_gui:=true teleop:=true \
+ros2 launch ieir_bringup real_robot.launch.py \
+  arms:=dual gripper:=false use_web:=true web_allow_control:=true teleop:=true \
   teleop_node_role:=slave teleop_mode:=no_feedback \
   teleop_peer_host:=192.168.10.10 teleop_local_port:=15001 teleop_peer_port:=15000
 ```
 
-主机按 T，**主臂自动约 5 秒对齐从臂**；确认后 Y 开始，Y 暂停，U 退出。
-准备对齐也会驱动主臂。无 GUI 时主机 prepare 后 toggle；任意端可 disable/exit：
+主机网页进入“主从遥操作”，选择“准备对齐”，**主臂自动约 5 秒对齐从臂**；
+确认后“开始跟随”，可“暂停跟随”或“退出遥操作”。
+准备对齐也会驱动主臂。无网页时主机 prepare 后 toggle；任意端可 disable/exit：
 
 ```bash
 ros2 service call /teleop/prepare std_srvs/srv/Trigger {}
@@ -329,23 +361,28 @@ teleop_role 是增益配置，teleop_node_role 才是网络角色；当前 maste
 
 ## 9. 纯仿真与可选夹爪
 
-仿真不需要 bridge、CAN 或 offsets。用独立 ROS 域，避免影响真机：
+仿真不需要 bridge、CAN 或 offsets。仿真代码可以不部署到工控机。
+需要仿真时显式安装和构建，再用独立 ROS 域，避免影响真机：
 
 ```bash
+bash src/scripts/install_dependencies.sh --install --with-simulation
+bash src/scripts/build_workspace.sh "$PWD" --with-simulation
+source install/setup.bash
 export ROS_DOMAIN_ID=60
-ros2 launch eiriarm_bringup system.launch.py controller_type:=joint_position enable_gripper:=false
+ros2 launch ieir_simulation system.launch.py controller_type:=joint_position
 # 或 controller_type:=gravity_compensation / cartesian_position
 ```
 
 /ctrl/command 和 /ctrl/gains 计算 MIT 力矩，只验证接口/轨迹，不代表准确真机动力学。
 纯仿真不要启动面向 W3 的夹爪节点。仿真 MJCF 自带夹爪惯性，
 没有与真机 gripper=false 完全一致的惯性自动切换，不能据此标定真实前馈。
+仿真入口已移除启动真实夹爪节点的选项。文件位置、独立显示及兼容标定入口见 [仿真手册](simulation/README.md)。
 
 装上夹爪后，bridge 和 real_robot 同时指定 gripper:=true，
 加入每臂 slot7/ID8、夹爪模型质量和独立控制器。
 启动包含开合行程标定，清空夹持区域。未装夹爪不得开启。
-参数见 eiriarm_controllers/config/gripper_controller.yaml；
-交互入口 `ros2 run eiriarm_controllers gripper_keyboard_control`。
+参数见 ieir_controllers/config/gripper_controller.yaml；
+交互入口 `ros2 run ieir_controllers gripper_keyboard_control`。
 
 ## 10. 排障
 
@@ -354,7 +391,7 @@ ros2 launch eiriarm_bringup system.launch.py controller_type:=joint_position ena
 | 找不到命令/参数不同 | ros2 pkg prefix，是否 source 全身版或旧 install |
 | rosdep glfw3 报错 | 本分支已改为 libglfw3-dev，检查是否用了旧 package.xml |
 | Pinocchio/eigenpy/NumPy ABI | 退出 Conda，不混用 pip/cmeel，系统 Python + ROS apt 重建 |
-| libmujoco 缺失 | 重建 eiriarm_mujoco，install 包的 lib 应有 3.3.0，勿替换为 3.3.6 |
+| libmujoco 缺失 | 只影响可选仿真；按仿真手册重建 ieir_simulation，勿替换为不同 SDK ABI |
 | CAN ENOBUFS/bus-off | 电源、接线、电阻、位速率、ACK；不能只增加队列掩盖 |
 | no-data | can0/1 物理对应、FD模式、ID、使能反馈、固件量程 |
 | QoS RELIABILITY 不兼容 | state 用 best_effort，echo 显式指定 |
@@ -364,7 +401,7 @@ ros2 launch eiriarm_bringup system.launch.py controller_type:=joint_position ena
 | 标定不能使能 | 其他电机未失能、多命令发布者、控制器/遥操作仍运行 |
 | 标定后仍读旧数据 | merge，检查启动输出的绝对 offsets 路径，重启控制端 |
 | 遥操作 enable 失败 | prepare 对齐、本机 ROS 域、UDP 地址/端口、关节名字集合 |
-| SSH 无 GUI | DISPLAY/图形会话/OpenGL；use_gui=false 可无面板控制，标定仍需显示 |
+| SSH 无 GUI | 总 UI 与网页标定不需要 DISPLAY；仅原 MuJoCo 标定显示需图形环境。远程浏览仅用受信 SSH 本地端口转发 |
 
 `ros2 launch ... --show-args` 可查看安装版本参数，不启动节点。
 更多真实边界、审查结果和测试记录见 [发布检查](docs/RELEASE_CHECKLIST.md)。

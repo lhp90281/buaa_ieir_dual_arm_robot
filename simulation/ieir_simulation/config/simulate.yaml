@@ -1,0 +1,12 @@
+mujoco_simulator:
+  # Path to your MJCF (.xml) model file. Absolute paths, relative paths, and
+  # package://pkg/path URLs are supported.
+  modelFile: "package://ieir_simulation/mjcf/dual_arm_robot.xml"
+  # MIT-style command split across two JointState topics:
+  #   /ctrl/command: name + position(q_des) + velocity(v_des) + effort(torque_ff)
+  #   /ctrl/gains:   name + position(kp)    + velocity(kd)
+  jointCommandsTopic: "/ctrl/command"
+  jointGainsTopic: "/ctrl/gains"
+  unPauseService: "/unpause_physics"
+  initPauseFlag: true
+  modelTableFlag: true

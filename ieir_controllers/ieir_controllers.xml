@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<library path="gravity_compensation_controller">
+  <class name="ieir_controllers/GravityCompensationController"
+         type="ieir_controllers::GravityCompensationController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Gravity Compensation Controller using Pinocchio dynamics.
+      Computes and applies gravity torques g(q) to compensate for gravitational effects.
+    </description>
+  </class>
+</library>
+
+<library path="joint_impedance_controller_plugin">
+  <class name="ieir_controllers/JointImpedanceControllerPlugin"
+         type="ieir_controllers::JointImpedanceControllerPlugin"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Joint Impedance Controller with Gravity Compensation using Pinocchio.
+      Implements: tau = g(q) + Kp*(qd-q) + Kd*(vd-v)
+      Supports per-joint gains and real-time target command updates.
+    </description>
+  </class>
+</library>
+
+<library path="joint_position_controller">
+  <class name="ieir_controllers/JointPositionController"
+         type="ieir_controllers::JointPositionController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Joint-space position controller for DM motors in MIT mode.
+      Forwards trajectory_msgs/JointTrajectory setpoints into the
+      position/velocity/stiffness/damping command interfaces; the motor
+      runs the inner PD loop. Designed to coexist with
+      gravity_compensation_controller (which writes effort) -- the motor
+      sums them into gravity-compensated joint impedance.
+    </description>
+  </class>
+</library>
+
+<library path="cartesian_position_controller_plugin">
+  <class name="ieir_controllers/CartesianPositionControllerPlugin"
+         type="ieir_controllers::CartesianPositionControllerPlugin"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Cartesian-space position controller for DM motors in MIT mode.
+      Receives PoseStamped targets per arm, solves Pinocchio damped-LS IK,
+      rate-limits the resulting joint trajectory, and forwards
+      (pos, v_ff, kp, kd) into the MIT-mode command interfaces; the motor
+      runs the inner PD loop. Designed to coexist with
+      gravity_compensation_controller (which writes the effort interface).
+    </description>
+  </class>
+</library>
+

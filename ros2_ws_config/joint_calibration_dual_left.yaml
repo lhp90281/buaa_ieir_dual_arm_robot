@@ -2,7 +2,7 @@
 #  双大臂 — 左臂 (W3 channel 0 / can0) 关节零点标定输入  [hard-stop 模式]
 # =============================================================================
 # 用法:
-#   ros2 run eiriarm_controllers joint_zero_calibration \
+#   ros2 run ieir_controllers joint_zero_calibration \
 #       --mode hard-stop \
 #       --calibration-yaml joint_calibration_dual_left.yaml \
 #       --output joint_offsets_left.yaml

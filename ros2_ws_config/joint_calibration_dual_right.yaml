@@ -4,7 +4,7 @@
 # 见 joint_calibration_dual_left.yaml 的完整说明.
 #
 # 用法:
-#   ros2 run eiriarm_controllers joint_zero_calibration \
+#   ros2 run ieir_controllers joint_zero_calibration \
 #       --mode hard-stop \
 #       --calibration-yaml joint_calibration_dual_right.yaml \
 #       --output joint_offsets_right.yaml

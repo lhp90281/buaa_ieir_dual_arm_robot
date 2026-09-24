@@ -11,7 +11,7 @@ find_package(ament_cmake REQUIRED)
 # --- 关键修改：添加安装规则 ---
 # 将这些文件夹安装到 install/share/dual_arm_support 下
 install(
-  DIRECTORY urdf mjcf meshes config launch
+  DIRECTORY urdf meshes config
   DESTINATION share/${PROJECT_NAME}
 )
 

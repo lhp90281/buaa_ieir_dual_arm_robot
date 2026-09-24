@@ -16,7 +16,7 @@
 | ros-humble-pinocchio | 3.9.0-1jammy.20260304.203533 |
 | ros-humble-ros2-control | 2.54.0-1jammy.20260505.183920 |
 | ros-humble-ros2-controllers | 2.53.1-1jammy.20260505.184646 |
-| 内置 MuJoCo C SDK | 3.3.0，mj_version()=330 |
+| 可选 ieir_simulation 的 MuJoCo C SDK | 3.3.0，mj_version()=330；真机无需安装 |
 
 特别注意 apt 当前候选 Pinocchio 可能不是 3.9.0；本次没有修改主机 apt、
 没有在全新 OS 虚拟机上联网安装验证所有候选版本。独立源码副本构建仍复用了本机系统依赖。

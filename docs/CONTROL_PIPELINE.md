@@ -10,7 +10,7 @@
 DM motor <-> CAN FD can0/can1 <-> w3_robot_bridge_node
   /state (MotorStateArray, raw units, best_effort)
     -> DMHardwareInterface.read -> calibrated ros2_control joint states
-    -> joint_state_broadcaster -> /joint_states -> robot_state_publisher / MuJoCo mirror
+    -> joint_state_broadcaster -> /joint_states -> robot_state_publisher / local Web UI
 
 gravity_compensation_controller -> effort (gravity + friction)
 joint_position_controller OR cartesian_position_controller
@@ -79,9 +79,11 @@ gripper=false 时先删除夹爪全部子树（含惯性），再将同一 robot
 控制器及 robot_state_publisher。双臂几何和 attachment frame 不改。
 单臂模式只暴露所选臂的 ros2_control 接口，仍保留固定基座全模型。
 
-EiriarmDynamics 用 Pinocchio，模型根坐标为 base_footprint，重力 [0,0,-9.81]。
+IeirDynamics 用 Pinocchio，模型根坐标为 base_footprint，重力 [0,0,-9.81]。
 本分支没有动态腰部状态或移动基座姿态输入。若底座倾斜/改安装方式，重力方向必须重新建模。
-MuJoCo mirror 的 MJCF 与动力学 URDF 是两套模型；显示有夹爪不等于重力模型带夹爪。
+日常 Web UI 使用同源 URDF 的视觉模型，gripper 与启动参数同步；显示不参与动力学计算。
+历史 MuJoCo 面板已移至可选 `ieir_simulation`，不再由真机 launch 启动。
+控制器、Web 模型和默认手动标定不依赖仿真包；真实模型仍来自 description 的 URDF。
 
 ## 5. 重力与摩擦前馈
 
@@ -131,7 +133,7 @@ tau_motor = KP*(raw_q_des - raw_q) + KD*(raw_v_des - raw_v) + raw_tau_ff
 末端为 left_attachment_point/right_attachment_point。输入四元数归一化，零范数按单位旋转。
 激活时 q_desired/q_command/q_home 都从当前姿态捕获；每个新目标从上一期 q_desired 求解。
 
-`EiriarmDynamics::solveIK` 迭代：
+`IeirDynamics::solveIK` 迭代：
 
 ```text
 T_error = inverse(T_current) * T_target
@@ -146,7 +148,7 @@ q_next = clamp(q_next, model joint limits)
 只拷贝该臂解出的关节，非双臂相对位姿约束求解。
 随后每关节用 position_interpolation_speed*dt 限制 q_command 的步长，v_ff=step/dt。
 这是**关节限速追踪 IK 解**，不保证末端直线、恒速或指定时间到达。
-home 请求回到本次激活捕获的 q_home，不是 GUI H 的模型全零，二者不要混淆。
+home 请求回到本次激活捕获的 q_home，不是网页“回零”的模型全零，二者不要混淆。
 阻尼最小二乘不是完善奇异保护：没有本分支内的显式伸直检测、奇异裕量门控、jerk 或碰撞保护。
 
 ## 8. W3 输出、反馈与故障边界
@@ -184,7 +186,12 @@ gripper=false 在回调和发布路径均禁用夹爪控制；true 时使用各�
 
 ## 10. 显示、仿真与测试划分
 
-mirror_real：MJCF qpos 从实物 joint_states 映射，物理暂停；GUI 可切控制器或发目标，不能当作安全只读终端。
+真机 Web UI：`ui.launch.py` 统一入口，打开页面不使能；确认后启停自有控制端、标定、遥操作、回放。
+bridge 独立手动启动；控制端和标定互斥，进程入口固定白名单，外部进程不被终止。
+`web_console.launch.py` 默认保留只连接模式；显式确认后切模式或发布轨迹。
+回零将当前反馈到零位的五次曲线按 50 Hz 采样成 JointTrajectory，理论峰值不超过 20°/s；
+仍由原控制器分段线性插值，保留 gravity effort，不保证碰撞安全或实际到达。
+网页显示以 30 Hz SSE 接收姿态并单独插值绘制，不修改控制频率，不外推丢失反馈。
 纯仿真：从 /ctrl/command + /ctrl/gains 合成 MIT 力矩推进 MuJoCo，并发布 joint_states。
 标定显示器：只有 FK，无物理，采样前是理论参考角，采样后是新标定角；其余关节显示零位。
 三种窗口不能相互替代。
